@@ -1,4 +1,3 @@
-// ไฟล์: backend/part_list/mainFormatRoute.js
 const express = require('express');
 const { connectDB } = require('../database');
 const xlsx = require('xlsx');
@@ -8,7 +7,6 @@ const archiver = require('archiver');
 
 const router = express.Router();
 
-// ฟังก์ชันช่วยสร้าง Buffer ของ Excel
 const generateExcelBuffer = (header, dataRows) => {
   const finalContent = [...header, ...dataRows, ["END"]];
   const wb = xlsx.utils.book_new();
@@ -17,193 +15,200 @@ const generateExcelBuffer = (header, dataRows) => {
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 };
 
-// ==========================================
-// 1. API สำหรับดาวน์โหลดไฟล์ Excel (.xlsx หรือ .zip)
-// ==========================================
+function parseExcelDate(excelDate) {
+  if (!excelDate) return new Date('invalid');
+  if (typeof excelDate === 'number') return new Date(Math.round((excelDate - 25569) * 86400 * 1000));
+  const cleanStr = String(excelDate).replace(/\s/g, '');
+  if (/^\d{8}$/.test(cleanStr)) return new Date(cleanStr.slice(0, 4), parseInt(cleanStr.slice(4, 6)) - 1, cleanStr.slice(6, 8));
+  return new Date(cleanStr);
+}
+
 router.get('/download-main', async (req, res) => {
   try {
     const templatePath = path.join(__dirname, '../templates/MainFormat.xlsx');
-    if (!fs.existsSync(templatePath)) {
-      return res.status(400).json({ error: 'Template file not found. Please upload template first.' });
-    }
+    if (!fs.existsSync(templatePath)) return res.status(400).json({ error: 'Template file not found.' });
 
     const { batchId, groups } = req.query; 
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
-
     const selectedGroups = groups ? groups.split(',') : [];
 
     const db = await connectDB();
-    const rows = await db.all(`
-      SELECT t.data as target_data, p.data as proc_data
-      FROM target_ro t
-      INNER JOIN part_procurement p ON t.key_tg = p.key_pp
-      WHERE t.batch_id = ? AND p.batch_id = ?
-    `, [batchId, batchId]);
+    const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
+    const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
-    if (rows.length === 0) return res.status(404).json({ error: 'No merged data found.' });
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const ppMap = new Map();
+    
+    for (const r of ppRows) {
+      const p = JSON.parse(r.data);
+      const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
+      const rowDate = parseExcelDate(tcToDate);
+      if (isNaN(rowDate) || rowDate <= today) continue; 
 
-    // 🔴 1. กรองข้อมูล (Data Cleaning)
-    const validRows = rows.filter(r => {
-      const p = JSON.parse(r.proc_data);
+      const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
+      const prodRouting = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
+      const partNo = String(p['PART #'] || p['PART # '] || '').trim();
       
-      // เงื่อนไข 1: ข้อมูล Procure ต้องมีอยู่จริง
-      if (!p || Object.keys(p).length === 0) return false;
+      const dockComb = prodRouting !== '' ? prodRouting : ppDock;
+      p['Dock Comb.'] = dockComb;
+      p['Suffix No'] = partNo.slice(-2);
       
-      // เงื่อนไข 2: ตัดข้อมูลที่มีคำว่า WHEEL ASSY ออก
-      const partDesc = String(p['PART DESC'] || '').trim().toUpperCase();
-      if (partDesc.includes('WHEEL ASSY')) return false;
+      const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
+      ppMap.set(keyPP, p);
+    }
 
-      return true;
-    });
+    const validRows = [];
+    for (const r of tgRows) {
+      const t = JSON.parse(r.data);
+      const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
+      const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
+      const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
+      const source = String(t['Source'] || t['Source '] || '').trim();
 
-    if (validRows.length === 0) return res.status(404).json({ error: 'No valid data after filtering.' });
+      if (supplier === 'TTAT' || (tgDock !== '' && tgDock === supplier)) continue;
+
+      const keyTG = (tgDock + partNo).replace(/[\s-]/g, '');
+      const p = ppMap.get(keyTG); 
+
+      if (p) {
+        if (String(p['PART DESC'] || '').trim().toUpperCase() === 'WHEEL ASSY') continue;
+
+        const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
+        let shop = 'A';
+        if (ppDock === 'SW' || ppDock === 'S9') shop = 'W';
+        else if (ppDock === 'SK') shop = 'K';
+
+        if (shop === 'K') continue; 
+
+        t['Group'] = 'SR481D' + shop + source;
+        validRows.push({ target_data: t, proc_data: p });
+      }
+    }
 
     const wbTemplate = xlsx.readFile(templatePath);
     const wsTemplate = wbTemplate.Sheets[wbTemplate.SheetNames[0]];
-    const templateData = xlsx.utils.sheet_to_json(wsTemplate, { header: 1 });
-    const header = templateData.slice(0, 5);
+    const header = xlsx.utils.sheet_to_json(wsTemplate, { header: 1 }).slice(0, 5);
 
-    // 🔴 กรณีโหลดแค่ 1 กลุ่ม -> โหลดไฟล์เดี่ยว .xlsx
+    const generateDataRow = (t, p) => [
+      "AA", "B", t['Group'] || "", "6", String(p['PART #'] || p['PART # '] || "").substring(0, 10), 
+      p['Suffix No'] || "", p['COMP'] || "", "S", p['Production Routing'] || p['Production Routing '] || "", 
+      p['DOCK'] || p['DOCK '] || "", p['SUPL'] || "", p['PLANT'] || "", p['S.DOCK'] || "", 
+      "", "", p['KBN'] || "", t['Source'] || t['Source '] || "", p['Dock Comb.'] || "", 
+      String(p['Model Name'] || "").substring(0, 4), p['Life Cycle Code'] || p['Life cycle code'] || "", 
+      p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "", p['V.SHARE VALUE'] || "", 
+      p['ORD Method'] || "", p['QTY /CONT'] || "", p['PACK QTY/CONT'] || "", 
+      "3", p['PART DESC'] || ""
+    ];
+
     if (selectedGroups.length === 1) {
       const groupName = selectedGroups[0];
-      const filteredRows = validRows.filter(r => JSON.parse(r.target_data)['Group'] === groupName);
-      
-      const dataRows = filteredRows.map(row => {
-        const t = JSON.parse(row.target_data);
-        const p = JSON.parse(row.proc_data);
-        return [
-          "AA", "B", t['Group'] || "", "6", p['PART #'] || "", p['Suffix No'] || "", 
-          p['COMP'] || "", p['PLANT'] || "", p['Production Routing'] || "", 
-          p['DOCK'] || "", p['SUPL'] || "", p['PLANT'] || "", p['S.DOCK'] || "", 
-          "", "", p['KBN'] || "", p['Source'] || "", p['Dock Comb.'] || "", 
-          p['COMP'] || "", p['Life Cycle Code'] || "", 
-          p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "", p['V.SHARE VALUE'] || "", 
-          p['ORD Method'] || "", p['QTY /CONT'] || "", p['PACK QTY/CONT'] || "", 
-          "3", p['PART DESC'] || ""
-        ];
-      });
-
-      const buffer = generateExcelBuffer(header, dataRows);
+      const dataRows = validRows.filter(r => r.target_data['Group'] === groupName).map(r => generateDataRow(r.target_data, r.proc_data));
       res.setHeader('Content-Disposition', `attachment; filename=PartList_${groupName}.xlsx`);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      return res.send(buffer);
-    } 
-    
-    // 🔴 กรณีโหลดหลายกลุ่ม -> สร้างโฟลเดอร์ใน .zip
-    else {
+      return res.send(generateExcelBuffer(header, dataRows));
+    } else {
       res.setHeader('Content-Disposition', `attachment; filename=PartList_Batches_${batchId}.zip`);
       res.setHeader('Content-Type', 'application/zip');
-
       const archive = archiver('zip', { zlib: { level: 9 } });
       archive.pipe(res);
-
-      const folderName = `PartList_${batchId}`; // ชื่อโฟลเดอร์ตอนแตกไฟล์
-
+      const folderName = `PartList_${batchId}`; 
       for (const groupName of selectedGroups) {
-        const filteredRows = validRows.filter(r => JSON.parse(r.target_data)['Group'] === groupName);
-        if (filteredRows.length === 0) continue; 
-
-        const dataRows = filteredRows.map(row => {
-          const t = JSON.parse(row.target_data);
-          const p = JSON.parse(row.proc_data);
-          return [
-            "AA", "B", t['Group'] || "", "6", p['PART #'] || "", p['Suffix No'] || "", 
-            p['COMP'] || "", p['PLANT'] || "", p['Production Routing'] || "", 
-            p['DOCK'] || "", p['SUPL'] || "", p['PLANT'] || "", p['S.DOCK'] || "", 
-            "", "", p['KBN'] || "", p['Source'] || "", p['Dock Comb.'] || "", 
-            p['COMP'] || "", p['Life Cycle Code'] || "", 
-            p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "", p['V.SHARE VALUE'] || "", 
-            p['ORD Method'] || "", p['QTY /CONT'] || "", p['PACK QTY/CONT'] || "", 
-            "3", p['PART DESC'] || ""
-          ];
-        });
-
-        const buffer = generateExcelBuffer(header, dataRows);
-        archive.append(buffer, { name: `${folderName}/PartList_${groupName}.xlsx` });
+        const dataRows = validRows.filter(r => r.target_data['Group'] === groupName).map(r => generateDataRow(r.target_data, r.proc_data));
+        if (dataRows.length > 0) archive.append(generateExcelBuffer(header, dataRows), { name: `${folderName}/PartList_${groupName}.xlsx` });
       }
-
       await archive.finalize(); 
     }
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to generate Main Format file' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ==========================================
-// 2. API สำหรับแสดง Preview บนหน้าเว็บ (ส่งกลับเป็น JSON 27 คอลัมน์)
-// ==========================================
 router.get('/preview-main', async (req, res) => {
   try {
     const { batchId } = req.query; 
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
 
     const db = await connectDB();
-    const rows = await db.all(`
-      SELECT t.data as target_data, p.data as proc_data
-      FROM target_ro t
-      INNER JOIN part_procurement p ON t.key_tg = p.key_pp
-      WHERE t.batch_id = ? AND p.batch_id = ?
-    `, [batchId, batchId]);
+    const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
+    const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
-    if (rows.length === 0) return res.status(404).json({ error: 'No merged data found.' });
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const ppMap = new Map();
+    
+    for (const r of ppRows) {
+      const p = JSON.parse(r.data);
+      const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
+      const rowDate = parseExcelDate(tcToDate);
+      if (isNaN(rowDate) || rowDate <= today) continue; 
 
-    // 🔴 2. กรองข้อมูลสำหรับหน้า Preview ด้วย (เงื่อนไขเดียวกับตอนดาวน์โหลด)
-    const validRows = rows.filter(r => {
-      const p = JSON.parse(r.proc_data);
-      if (!p || Object.keys(p).length === 0) return false;
+      const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
+      const prodRouting = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
+      const partNo = String(p['PART #'] || p['PART # '] || '').trim();
       
-      const partDesc = String(p['PART DESC'] || '').trim().toUpperCase();
-      if (partDesc.includes('WHEEL ASSY')) return false;
+      const dockComb = prodRouting !== '' ? prodRouting : ppDock;
+      p['Dock Comb.'] = dockComb;
+      p['Suffix No'] = partNo.slice(-2);
+      
+      const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
+      ppMap.set(keyPP, p);
+    }
 
-      return true;
-    });
+    const previewData = [];
+    for (const r of tgRows) {
+      const t = JSON.parse(r.data);
+      const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
+      const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
+      const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
+      const source = String(t['Source'] || t['Source '] || '').trim();
 
-    const previewData = validRows.map(row => {
-      const t = JSON.parse(row.target_data);
-      const p = JSON.parse(row.proc_data);
+      if (supplier === 'TTAT' || (tgDock !== '' && tgDock === supplier)) continue;
 
-      // คอลัมน์เดิมที่คุณตั้งไว้
-      return {
-        "Company*": "AA",
-        "Company plant code*": "B",
-        "Group ID*": t['Group'] || "",
-        "CTL flag*": "6",
-        "Part No.*": p['PART #'] || "",
-        "Suffix*": p['Suffix No'] || "",
-        "Receiving company*": p['COMP'] || "",
-        "Receiving company plant code*": p['PLANT'] || "",
-        "Production process routing": p['Production Routing'] || "",
-        "Dock code*": p['DOCK'] || "",
-        "Supplier*": p['SUPL'] || "",
-        "Supplier plant code*": p['PLANT'] || "",
-        "Supplier shipping dock": p['S.DOCK'] || "",
-        "Previous process routing": "",
-        "Dummy": "",
-        "Kanban No.*": p['KBN'] || "",
-        "Source code*": p['Source'] || "",
-        "Hikiate matching key*": p['Dock Comb.'] || "",
-        "Model 1": p['COMP'] || "",
-        "Life cycle code*": p['Life Cycle Code'] || "",
-        "Vender share type": p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "",
-        "Vender share value": p['V.SHARE VALUE'] || "",
-        "Order method*": p['ORD Method'] || "",
-        "Order lot*": p['QTY /CONT'] || "",
-        "Order lot size*": p['PACK QTY/CONT'] || "",
-        "Round up flag*": "3",
-        "Part name*": p['PART DESC'] || ""
-      };
-    });
+      const keyTG = (tgDock + partNo).replace(/[\s-]/g, '');
+      const p = ppMap.get(keyTG); 
 
-    res.json({
-      message: 'Preview generated successfully',
-      count: previewData.length,
-      data: previewData
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to generate preview data' });
-  }
+      if (p) {
+        if (String(p['PART DESC'] || '').trim().toUpperCase() === 'WHEEL ASSY') continue;
+
+        const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
+        let shop = 'A';
+        if (ppDock === 'SW' || ppDock === 'S9') shop = 'W';
+        else if (ppDock === 'SK') shop = 'K';
+
+        if (shop === 'K') continue; 
+
+        t['Group'] = 'SR481D' + shop + source;
+
+        previewData.push({
+          "Company*": "AA",
+          "Company plant code*": "B",
+          "Group ID*": t['Group'] || "",
+          "CTL flag*": "6",
+          "Part No.*": String(p['PART #'] || p['PART # '] || "").substring(0, 10),
+          "Suffix*": p['Suffix No'] || "",
+          "Receiving company*": p['COMP'] || "",
+          "Receiving company plant code*": "S",
+          "Production process routing": p['Production Routing'] || p['Production Routing '] || "",
+          "Dock code*": p['DOCK'] || p['DOCK '] || "",
+          "Supplier*": p['SUPL'] || "",
+          "Supplier plant code*": p['PLANT'] || "",
+          "Supplier shipping dock": p['S.DOCK'] || "",
+          "Previous process routing": "",
+          "Dummy": "",
+          "Kanban No.*": p['KBN'] || "",
+          "Source code*": t['Source'] || t['Source '] || "",
+          "Hikiate matching key*": p['Dock Comb.'] || "",
+          "Model 1": String(p['Model Name'] || "").substring(0, 4),
+          "Life cycle code*": p['Life cycle code'] || p['Life Cycle Code'] || "",
+          "Vender share type": p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "",
+          "Vender share value": p['V.SHARE VALUE'] || "",
+          "Order method*": p['ORD Method'] || "",
+          "Order lot*": p['QTY /CONT'] || "",
+          "Order lot size*": p['PACK QTY/CONT'] || "",
+          "Round up flag*": "3",
+          "Part name*": p['PART DESC'] || ""
+        });
+      }
+    }
+    res.json({ message: 'Success', count: previewData.length, data: previewData });
+  } catch (error) { res.status(500).json({ error: 'Failed' }); }
 });
 
 module.exports = router;

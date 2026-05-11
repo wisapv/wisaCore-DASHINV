@@ -1,3 +1,4 @@
+// ไฟล์: backend/handheld_part_list/assignAddrRoute.js
 const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
@@ -23,20 +24,25 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
         const ppRaw = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
         const today = new Date(); today.setHours(0, 0, 0, 0);
-        const ppMap = new Map();
         
+        const ppMap = new Map();
+        const allPpMap = new Map(); 
+
         ppRaw.forEach(r => {
             const p = JSON.parse(r.data);
             const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
             const rowDate = parseExcelDate(tcToDate);
+            
+            const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
+            const routing = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
+            const partNo = String(p['PART #'] || p['PART # '] || '').trim();
+            
+            const dockComb = routing !== '' ? routing : ppDock;
+            const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
+            
+            allPpMap.set(keyPP, p); 
+
             if (rowDate > today) {
-                const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-                const routing = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
-                const partNo = String(p['PART #'] || p['PART # '] || '').trim();
-                
-                const dockComb = routing !== '' ? routing : ppDock;
-                const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
-                
                 if (String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase() !== 'WHEEL ASSY') {
                     ppMap.set(keyPP, p);
                 }
@@ -46,7 +52,9 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
         const addrWorkbook = xlsx.read(req.file.buffer, { type: 'buffer' });
         const addrSheet = addrWorkbook.Sheets[addrWorkbook.SheetNames[0]];
         const addrRaw = xlsx.utils.sheet_to_json(addrSheet);
+        
         const addrMap = new Map();
+        const partNameAddrLookup = new Map();
 
         addrRaw.forEach(row => {
             const toDate = parseExcelDate(row['T/C TO (UNL)']);
@@ -54,7 +62,13 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
                 const dock = String(row['DOCK'] || '').replace(/\s/g, '');
                 const partNo = String(row['PART #'] || '').replace(/\s/g, '');
                 const keyAddr = (dock + partNo).replace(/-/g, ''); 
+                
                 addrMap.set(keyAddr, row);
+
+                const partNameKey = String(row['PART DESC'] || row['PART NAME'] || '').trim().toUpperCase();
+                if (partNameKey) {
+                    partNameAddrLookup.set(partNameKey, row);
+                }
             }
         });
 
@@ -62,7 +76,6 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
         const holdData = [];
         const remindData = []; 
         const baseDataList = [];
-        const partNameAddrLookup = new Map();
 
         tgRaw.forEach(r => {
             const t = JSON.parse(r.data);
@@ -70,31 +83,45 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
             const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
             const partNoRaw = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
             
-            if (tgDock !== '' && tgDock === supplier && supplier !== 'TTAT') return;
+            if (!partNoRaw) return; 
+
+            if (tgDock !== '' && tgDock === supplier && supplier !== 'TTAT') return; 
 
             const keyTG = (tgDock + partNoRaw).replace(/[\s-]/g, '');
-            const p = ppMap.get(keyTG);
+            const p = ppMap.get(keyTG); 
 
             if (p) {
-                const addrInfo = addrMap.get(keyTG);
-                const partDescKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
-
-                if (addrInfo && partDescKey) partNameAddrLookup.set(partDescKey, addrInfo);
-                baseDataList.push({ t, p, addrInfoDirect: addrInfo, partDescKey });
+                baseDataList.push({ t, p });
             } else {
-                remindData.push({
-                    "Dock IH": tgDock,
-                    "Supplier": supplier,
-                    "Part No": partNoRaw,
-                    "Source": t['Source'] || t['Source '] || "",
-                    "Reason": "Missing in Part Procurement"
-                });
+                if (!allPpMap.has(keyTG) && supplier !== 'TTAT') {
+                    remindData.push({
+                        "Dock IH": tgDock,
+                        "Supplier": supplier,
+                        "Part No": partNoRaw,
+                        "Source": t['Source'] || t['Source '] || "",
+                        "Reason": "Missing in Part Procurement"
+                    });
+                }
             }
         });
 
         baseDataList.forEach(item => {
-            const { t, p, addrInfoDirect, partDescKey } = item;
-            const addrInfo = addrInfoDirect || partNameAddrLookup.get(partDescKey);
+            const { t, p } = item;
+            
+            // 🔴 แก้ไขจุดสำคัญ: แทนที่จะใช้ Key จาก Target
+            // เราจะสร้าง Key ใหม่เพื่อหา Address โดยใช้ช่อง DOCK จาก Part Proc (เช่น S5)
+            const ppDockValue = String(p['DOCK'] || p['DOCK '] || '').replace(/\s/g, '');
+            const ppPartNo = String(p['PART #'] || p['PART # '] || '').replace(/\s/g, '');
+            const addrLookupKey = (ppDockValue + ppPartNo).replace(/-/g, '');
+            
+            let addrInfo = addrMap.get(addrLookupKey);
+            
+            // ถ้าไม่เจอ ค่อยหาด้วยชื่อพาร์ท (Match ทีหลัง)
+            if (!addrInfo) {
+                const partNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
+                addrInfo = partNameAddrLookup.get(partNameKey);
+            }
+
             const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
 
             if (!addrInfo) {

@@ -6,8 +6,6 @@ const router = express.Router();
 router.get('/list', async (req, res) => {
   try {
     const db = await connectDB();
-    
-    // 🟢 ดึงข้อมูล Batch ทั้งหมดออกมาตรงๆ โดยไม่ใส่เงื่อนไขดักจำนวนแถว
     const rows = await db.all(`
       SELECT 
         b.batch_id, 
@@ -18,8 +16,9 @@ router.get('/list', async (req, res) => {
       ORDER BY b.upload_date DESC
     `);
     
-    console.log("History Sent:", rows.length, "batches"); // เช็คที่ Console ของ Backend
+    // 🟢 เอา console.log ออกแล้วครับ จะได้ไม่รก Terminal
     res.json(rows);
+    
   } catch (error) {
     console.error("Fetch batches error:", error);
     res.status(500).json({ error: 'Failed to fetch batches' });
@@ -30,11 +29,13 @@ router.delete('/:id', async (req, res) => {
   try {
     const db = await connectDB();
     const batchId = req.params.id;
+    
     await db.exec('BEGIN TRANSACTION');
     try {
-      await db.run('DELETE FROM upload_batches WHERE batch_id = ?', [batchId]);
-      await db.run('DELETE FROM target_ro WHERE batch_id = ?', [batchId]);
-      await db.run('DELETE FROM part_procurement WHERE batch_id = ?', [batchId]);
+      // 🟢 เอาวงเล็บก้ามปู [ ] ออก เพื่อให้ SQLite อ่านค่าตัวแปรได้ถูกต้อง
+      await db.run('DELETE FROM upload_batches WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM target_ro WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM part_procurement WHERE batch_id = ?', batchId);
       await db.exec('COMMIT');
       res.json({ message: 'Batch deleted' });
     } catch (err) {
@@ -42,6 +43,7 @@ router.delete('/:id', async (req, res) => {
       throw err;
     }
   } catch (error) {
+    console.error("Delete Error:", error);
     res.status(500).json({ error: 'Failed to delete batch' });
   }
 });

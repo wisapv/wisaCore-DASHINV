@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   CheckCircle2, FileSpreadsheet, Database, Loader2, Download, 
   X, CheckSquare, Square, Merge, History, Plus, Filter, 
-  ArrowRight, AlertCircle, MapPin, AlertTriangle // 🔴 เพิ่ม AlertTriangle
+  ArrowRight, AlertCircle, MapPin, AlertTriangle
 } from 'lucide-react';
 
 const generateBatchId = () => {
@@ -26,7 +26,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [addrFileUploaded, setAddrFileUploaded] = useState(false);
   const [finalHandheldData, setFinalHandheldData] = useState(null);
   
-  // 🔴 State สำหรับเก็บข้อมูล Error/Exception
+  // State สำหรับเก็บข้อมูล Error/Exception
   const [holdData, setHoldData] = useState([]);
   const [remindData, setRemindData] = useState([]);
 
@@ -34,20 +34,15 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const fileInputRef2 = useRef(null);
   const fileInputRef3 = useRef(null); 
 
+  // 🔴 จุดแก้บั๊ก: เปลี่ยนเงื่อนไขเพื่อไม่ให้ล้าง Batch ID ทิ้งเวลาสลับหน้า
   useEffect(() => { 
     if (activeTab === 'TBOS') {
-      // 🔴 เช็คว่าถ้ายังไม่มี Batch ID (เปิดเว็บมาครั้งแรก) ค่อยสร้างใหม่
       if (!currentBatchId) {
-        resetUpload(); 
+        setCurrentBatchId(generateBatchId());
       }
       fetchHistory();
     }
-  }, [activeTab, currentBatchId]);
-
-  // เพิ่มฟังก์ชันสำหรับกดปุ่ม "New Upload" แยกต่างหาก (ถ้ามี)
-  const handleStartNewUpload = () => {
-    resetUpload(); // ล้างข้อมูลเฉพาะเมื่อต้องการเริ่มใหม่จริงๆ
-  };
+  }, [activeTab]);
 
   const resetUpload = () => {
     setStep('idle');
@@ -69,20 +64,25 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       const response = await fetch('http://localhost:3000/api/batches/list');
       if (response.ok) {
         const data = await response.json();
-        // 🔴 ยัดข้อมูลลง State เพื่อให้ตารางเอาไปแสดงผล (บรรทัดนี้สำคัญมากห้ามมี // ด้านหน้า)
-        setHistoryBatches(data); 
+        setHistoryBatches(data);
       }
-    } catch (err) {
-      console.error("Failed to fetch history", err);
-    }
+    } catch (err) { console.error("Failed to fetch history", err); }
   };
 
   const handleDeleteBatch = async (batchId) => {
     if(!window.confirm(`Are you sure you want to delete Batch: ${batchId}?`)) return;
     try {
-      await fetch(`http://localhost:3000/api/batches/${batchId}`, { method: 'DELETE' });
-      fetchHistory(); 
-    } catch (err) { alert("Failed to delete batch."); }
+      const response = await fetch(`http://localhost:3000/api/batches/${batchId}`, { method: 'DELETE' });
+      
+      if (response.ok) {
+        // ถ้า Backend ตอบกลับมาว่าลบสำเร็จ ให้สั่งดึงข้อมูลประวัติใหม่เพื่ออัปเดตตารางทันที
+        fetchHistory(); 
+      } else {
+        alert("Failed to delete batch (Backend Error).");
+      }
+    } catch (err) { 
+      alert("Failed to connect to server."); 
+    }
   };
 
   const handlePreviewHistory = (batchId) => {
@@ -109,7 +109,11 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     try {
       setStep('generating');
       const response = await fetch('http://localhost:3000/api/part-list/target-ro', { method: 'POST', body: formData });
-      if (response.ok) { setUploadStatus(prev => ({ ...prev, target: true })); setStep('idle'); } 
+      if (response.ok) { 
+        setUploadStatus(prev => ({ ...prev, target: true })); 
+        setStep('idle'); 
+        fetchHistory(); // 🔴 ให้โหลดประวัติใหม่ทันทีที่อัปโหลดเสร็จ
+      } 
       else { alert("Upload Target R/O Failed!"); setStep('idle'); }
     } catch (err) { alert("Server Error!"); setStep('idle'); }
     e.target.value = null; 
@@ -124,7 +128,11 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     try {
       setStep('generating');
       const response = await fetch('http://localhost:3000/api/part-list/part-procurement', { method: 'POST', body: formData });
-      if (response.ok) { setUploadStatus(prev => ({ ...prev, proc: true })); setStep('idle'); } 
+      if (response.ok) { 
+        setUploadStatus(prev => ({ ...prev, proc: true })); 
+        setStep('idle'); 
+        fetchHistory(); // 🔴 ให้โหลดประวัติใหม่ทันทีที่อัปโหลดเสร็จ
+      } 
       else { alert("Upload Part Procurement Failed!"); setStep('idle'); }
     } catch (err) { alert("Server Error!"); setStep('idle'); }
     e.target.value = null; 
@@ -168,8 +176,8 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         const result = await res.json();
         if (result.success) {
             setFinalHandheldData(result.data);
-            setHoldData(result.hold);     // 🔴 เก็บข้อมูล Hold
-            setRemindData(result.remind); // 🔴 เก็บข้อมูล Remind
+            setHoldData(result.hold);     
+            setRemindData(result.remind); 
             setAddrFileUploaded(true);
             setStep('idle');
         } else { alert("Process Failed"); setStep('idle'); }
@@ -316,7 +324,6 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {/* 🔴 ใช้ตัวแปร historyBatches ให้ตรงกับด้านบน */}
                     {historyBatches && historyBatches.length > 0 ? (
                       historyBatches.map(b => (
                         <tr key={b.batch_id} className="hover:bg-orange-50/30 transition-colors">
@@ -500,10 +507,38 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
           )}
         </div>
       )}
+      
       {/* ================= DOWNLOAD POPUP MODAL ================= */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">
-          {/* ... โค้ด Modal ดาวน์โหลดเหมือนเดิม ... */}
+          <div className="bg-white rounded-[24px] p-8 w-[400px] shadow-2xl animate-in zoom-in-95 relative">
+            <button onClick={() => setIsModalOpen(false)} className="absolute top-6 right-6 text-gray-400 hover:text-dark transition-colors"><X size={20} /></button>
+            <h3 className="text-xl font-bold text-dark mb-2">Download Options</h3>
+            <p className="text-sm text-gray-500 mb-6">Batch ID: <span className="font-mono text-xs">{currentBatchId}</span></p>
+
+            <div className="flex flex-col gap-2 mb-8">
+              <div onClick={handleToggleAll} className="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-100 hover:border-primary/50 hover:bg-orange-50/50 cursor-pointer transition-all group">
+                {isAllChecked ? <CheckSquare size={20} className="text-primary" /> : <Square size={20} className="text-gray-300 group-hover:text-primary/50" />}
+                <span className="font-bold text-dark select-none">Select All Groups ({downloadFiles.length})</span>
+              </div>
+              <div className="w-full h-px bg-gray-100 my-2"></div>
+              <div className="flex flex-col gap-1 max-h-[150px] overflow-y-auto pr-2">
+                {downloadFiles.map((file) => (
+                  <div key={file.id} onClick={() => handleToggleFile(file.id)} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors group">
+                    {file.isChecked ? <CheckSquare size={18} className="text-primary" /> : <Square size={18} className="text-gray-300 group-hover:text-primary/50" />}
+                    <span className={`text-sm font-medium select-none ${file.isChecked ? 'text-dark' : 'text-gray-500'}`}>{file.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
+              <button onClick={handleConfirmDownload} className={`px-6 py-2.5 rounded-xl font-bold transition-all shadow-md ${downloadFiles.some(f => f.isChecked) ? 'bg-primary text-white hover:scale-105 shadow-primary/20' : 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'}`}>
+                Download
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

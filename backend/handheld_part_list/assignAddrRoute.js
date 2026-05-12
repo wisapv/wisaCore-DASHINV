@@ -84,16 +84,16 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
             const partNoRaw = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
             
             if (!partNoRaw) return; 
-
-            if (tgDock !== '' && tgDock === supplier && supplier !== 'TTAT') return; 
+            if (supplier === 'TTAT') return;
+            if (tgDock !== '' && tgDock === supplier) return; 
 
             const keyTG = (tgDock + partNoRaw).replace(/[\s-]/g, '');
             const p = ppMap.get(keyTG); 
 
             if (p) {
-                baseDataList.push({ t, p });
+                baseDataList.push({ t, p, keyTG });
             } else {
-                if (!allPpMap.has(keyTG) && supplier !== 'TTAT') {
+                if (!allPpMap.has(keyTG)) {
                     remindData.push({
                         "Dock IH": tgDock,
                         "Supplier": supplier,
@@ -107,16 +107,12 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
 
         baseDataList.forEach(item => {
             const { t, p } = item;
-            
-            // 🔴 แก้ไขจุดสำคัญ: แทนที่จะใช้ Key จาก Target
-            // เราจะสร้าง Key ใหม่เพื่อหา Address โดยใช้ช่อง DOCK จาก Part Proc (เช่น S5)
             const ppDockValue = String(p['DOCK'] || p['DOCK '] || '').replace(/\s/g, '');
             const ppPartNo = String(p['PART #'] || p['PART # '] || '').replace(/\s/g, '');
             const addrLookupKey = (ppDockValue + ppPartNo).replace(/-/g, '');
             
             let addrInfo = addrMap.get(addrLookupKey);
             
-            // ถ้าไม่เจอ ค่อยหาด้วยชื่อพาร์ท (Match ทีหลัง)
             if (!addrInfo) {
                 const partNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
                 addrInfo = partNameAddrLookup.get(partNameKey);
@@ -137,49 +133,100 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
 
             const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
             const source = String(t['Source'] || t['Source '] || '').trim();
+            
+            // 🔴 1. คลีนดาต้าและแปลงเป็น "ตัวพิมพ์ใหญ่ทั้งหมด" เพื่อแก้ปัญหา r. ไม่ตรงกับ R.
+            const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
+            const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
+            
+            // ลบเว้นวรรคตรงกลางออกทั้งหมด เอาไว้นับ Length=4 สำหรับ PC (เช่น F  -  01 กลายเป็น F-01)
+            const kanbanAddrClean = kanbanAddrRaw.replace(/\s/g, ''); 
 
             let shop = 'A';
-            if (supplier === 'TTAT') shop = 'TTAT';
-            else if (ppDock === 'SW' || ppDock === 'S9') shop = 'W';
-            else if (ppDock === 'SK') shop = 'K';
-            else if (ppDock === 'ST') shop = 'T';
+            let pic = 'A';
+            let shouldDup = false;
+            let linesidePic = 'A';
 
-            const kanbanAddr = String(addrInfo['Kanban Print Address'] || '').trim();
-            const linesideAddr = String(addrInfo['Lineside Address'] || '').trim();
-
-            const createFinalRow = (address, picType) => ({
-                Shop: shop,
-                Group: 'SR481D' + shop + source,
-                Dock: ppDock,
-                Supplier: p['SUPL'] || p['SUPL '] || "",
-                "S.plant": p['PLANT'] || p['PLANT '] || "",             
-                "S.dock": p['S.DOCK'] || p['S.DOCK '] || "",             
-                "Part no.": p['PART #'] || p['PART # '] || "",           
-                "Part name": p['PART DESC'] || p['PART DESC '] || "",
-                kbn: p['KBN'] || p['KBN '] || "",
-                "Q'ty": p['QTY /CONT'] || p['QTY /CONT '] || "",
-                Addr: address,
-                PIC: picType
-            });
-
-            if (shop === 'A') {
-                let pic = 'A';
-                let shouldDup = false;
-
-                if (kanbanAddr.startsWith('R.')) { shop = 'R'; pic = 'R'; shouldDup = false; }
-                else if (/^(SBP|BP1|CH1|CH2|DO1|EG1|FA1|FN1|FN2|FN3|FN4|FR1|FR2|IP1|TR1|TR2|FA)/.test(kanbanAddr)) { pic = 'A'; shouldDup = false; }
-                else if (kanbanAddr.startsWith('PC') && kanbanAddr.length === 4) { pic = 'PC'; shouldDup = true; }
-                else if (kanbanAddr.startsWith('S4') || (ppDock === 'S4' && kanbanAddr.startsWith('SS'))) { pic = 'S4'; shouldDup = false; }
-                else if (/^(RA1|S5|SJ|SL|SM|SN|SO|SP)/.test(kanbanAddr)) { pic = 'S5'; shouldDup = false; }
-                else if (kanbanAddr.startsWith('S')) { pic = 'ALS'; shouldDup = true; }
-                else { pic = 'A'; shouldDup = false; }
-
-                if (kanbanAddr) finalData.push(createFinalRow(kanbanAddr, pic));
-                if (shouldDup && linesideAddr) finalData.push(createFinalRow(linesideAddr, pic));
+            // 🔴 2. เริ่มเช็คเงื่อนไข Shop หลัก
+            if (ppDock === 'SW' || ppDock === 'S9') {
+                shop = 'W'; pic = 'W'; shouldDup = true; linesidePic = 'W';
             } 
-            else if (['W', 'T', 'K', 'TTAT'].includes(shop)) {
-                if (kanbanAddr) finalData.push(createFinalRow(kanbanAddr, shop));
-                if (linesideAddr) finalData.push(createFinalRow(linesideAddr, shop));
+            else if (ppDock === 'ST') {
+                shop = 'T'; pic = 'T'; shouldDup = true; linesidePic = 'T';
+            } 
+            else if (ppDock === 'SK') {
+                shop = 'K'; pic = 'K'; shouldDup = true; linesidePic = 'K';
+            } 
+            else if (ppDock === 'S6' && (kanbanAddrRaw.startsWith('SS') || kanbanAddrRaw.startsWith('TUSHO')) && supplier !== 'TBOS') {
+                shop = 'TTAT'; pic = 'TTAT'; shouldDup = false; 
+            } 
+            else if (kanbanAddrRaw.startsWith('R.')) {
+                shop = 'R'; pic = 'R'; shouldDup = false; 
+            } 
+            else {
+                // 🔴 3. กฎเฉพาะสำหรับ Shop A (เรียงลำดับใหม่ให้เป๊ะที่สุด)
+                shop = 'A';
+                
+                // 1. ถ้าขึ้นต้นด้วย PC เป๊ะๆ
+                if (kanbanAddrRaw.startsWith('PC')) {
+                    pic = 'PC'; shouldDup = true; linesidePic = 'A';
+                } 
+                // 2. ถ้าขึ้นต้นด้วยพวกแก๊ง PIC A
+                else if (/^(SBP|BP1|CH1|CH2|DO1|EG1|FA1|FN1|FN2|FN3|FN4|FR1|FR2|IP1|TR1|TR2|FA)/.test(kanbanAddrRaw)) {
+                    pic = 'A'; shouldDup = false;
+                } 
+                // 3. แก๊ง S4
+                else if (kanbanAddrRaw.startsWith('S4') || (ppDock === 'S4' && kanbanAddrRaw.startsWith('SS'))) {
+                    pic = 'S4'; shouldDup = false;
+                } 
+                // 4. แก๊ง S5
+                else if (/^(RA1|S5|SJ|SL|SM|SN|SO|SP)/.test(kanbanAddrRaw)) {
+                    pic = 'S5'; shouldDup = false;
+                } 
+                // 5. แก๊ง ALS (ขึ้นต้นด้วย S แต่ไม่ชนกับแก๊งข้างบน)
+                else if (kanbanAddrRaw.startsWith('S') && !/^(S5|S4|SJ|SL|SM|SN|SO|SP|SBP)/.test(kanbanAddrRaw)) {
+                    pic = 'ALS'; shouldDup = true; linesidePic = 'A';
+                } 
+                // 6. 🔴 เงื่อนไขตกค้าง ถ้าสั้น 4 ตัว (เช่น F-01) ถึงจะให้เป็น PC (วางไว้ท้ายสุดจะได้ไม่แย่งซีนตัวอื่น)
+                else if (kanbanAddrClean.length === 4) {
+                    pic = 'PC'; shouldDup = true; linesidePic = 'A';
+                }
+                // 7. นอกเหนือจากนี้ โยนเข้า A หมด
+                else {
+                    pic = 'A'; shouldDup = false;
+                }
+            }
+
+            // 🔴 4. ฟังก์ชันสร้างข้อมูล
+            const createFinalRow = (address, picType, finalShop, isLineside = false) => {
+                // ตัด 3 ตัว สำหรับ Lineside และตัด 2 ตัว สำหรับ Kanban ตามที่สั่ง
+                const shortAddr = isLineside ? address.substring(0, 3) : address.substring(0, 2);
+                return {
+                    Shop: finalShop,
+                    Group: 'SR481D' + finalShop + source,
+                    Dock: ppDock,
+                    Supplier: p['SUPL'] || p['SUPL '] || "",
+                    "S.plant": p['PLANT'] || p['PLANT '] || "",             
+                    "S.dock": p['S.DOCK'] || p['S.DOCK '] || "",             
+                    "Part no.": p['PART #'] || p['PART # '] || "",           
+                    "Part name": p['PART DESC'] || p['PART DESC '] || "",
+                    kbn: p['KBN'] || p['KBN '] || "",
+                    "Q'ty": p['QTY /CONT'] || p['QTY /CONT '] || "",
+                    Addr: address,
+                    ShortAddr: shortAddr, 
+                    PIC: picType
+                };
+            };
+
+            // บรรทัดแรก (Kanban Print Addr)
+            if (kanbanAddrRaw) {
+                finalData.push(createFinalRow(kanbanAddrRaw, pic, shop, false));
+            }
+            
+            // บรรทัดที่สอง (Lineside Addr) 
+            // - ถ้า shouldDup เป็น true (เช่น PC, ALS, W, T, K) และมีข้อมูล Lineside ก็จะสร้าง
+            // - picType ของบรรทัดนี้ จะถูกระบุมาจากตัวแปร linesidePic (ซึ่งตั้งเป็น A ไว้ให้แล้วสำหรับ PC/ALS)
+            if (shouldDup && linesideAddrRaw) {
+                finalData.push(createFinalRow(linesideAddrRaw, linesidePic, shop, true));
             }
         });
 

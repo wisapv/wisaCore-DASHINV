@@ -65,7 +65,9 @@ router.get('/download-main', async (req, res) => {
       const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
       const source = String(t['Source'] || t['Source '] || '').trim();
 
-      if (supplier === 'TTAT' || (tgDock !== '' && tgDock === supplier)) continue;
+      if (!partNo) continue;
+      if (supplier === 'TTAT') continue; // Drop TTAT
+      if (tgDock !== '' && tgDock === supplier) continue; // Drop Dock=Supplier
 
       const keyTG = (tgDock + partNo).replace(/[\s-]/g, '');
       const p = ppMap.get(keyTG); 
@@ -132,12 +134,12 @@ router.get('/preview-main', async (req, res) => {
 
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const ppMap = new Map();
+    const allPpMap = new Map(); // 🔴 เพิ่ม Map เพื่อเช็ค Remind
     
     for (const r of ppRows) {
       const p = JSON.parse(r.data);
       const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
       const rowDate = parseExcelDate(tcToDate);
-      if (isNaN(rowDate) || rowDate <= today) continue; 
 
       const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
       const prodRouting = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
@@ -148,10 +150,16 @@ router.get('/preview-main', async (req, res) => {
       p['Suffix No'] = partNo.slice(-2);
       
       const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
+      
+      allPpMap.set(keyPP, p); // 🔴 เก็บทุกข้อมูลเพื่ออ้างอิง
+
+      if (isNaN(rowDate) || rowDate <= today) continue; 
       ppMap.set(keyPP, p);
     }
 
     const previewData = [];
+    const remindData = []; // 🔴 สร้าง Array สำหรับข้อมูล Remind
+
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
       const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
@@ -159,7 +167,9 @@ router.get('/preview-main', async (req, res) => {
       const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
       const source = String(t['Source'] || t['Source '] || '').trim();
 
-      if (supplier === 'TTAT' || (tgDock !== '' && tgDock === supplier)) continue;
+      if (!partNo) continue;
+      if (supplier === 'TTAT') continue; // 🔴 Drop TTAT
+      if (tgDock !== '' && tgDock === supplier) continue; // 🔴 Drop Dock=Supplier
 
       const keyTG = (tgDock + partNo).replace(/[\s-]/g, '');
       const p = ppMap.get(keyTG); 
@@ -205,9 +215,21 @@ router.get('/preview-main', async (req, res) => {
           "Round up flag*": "3",
           "Part name*": p['PART DESC'] || ""
         });
+      } else {
+        // 🔴 ถ้าไม่มีข้อมูลใน Part Procure ให้เอามาใส่ Remind (เงื่อนไขเดียวกับ Handheld)
+        if (!allPpMap.has(keyTG)) {
+            remindData.push({
+                "Dock IH": tgDock,
+                "Supplier": supplier,
+                "Part No": partNo,
+                "Source": source,
+                "Reason": "Missing in Part Procurement"
+            });
+        }
       }
     }
-    res.json({ message: 'Success', count: previewData.length, data: previewData });
+    // 🔴 ส่งข้อมูล remind กลับไปพร้อมกัน
+    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData });
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
 });
 

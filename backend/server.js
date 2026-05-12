@@ -1,3 +1,4 @@
+// ไฟล์: backend/server.js
 const express = require('express');
 const cors = require('cors');
 const { initDB } = require('./database'); 
@@ -13,7 +14,10 @@ const assignAddrRoute = require('./handheld_part_list/assignAddrRoute');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+
+// 🔴 แก้ไขจุดนี้: ขยายประตูหน้าบ้านให้รับข้อมูล JSON และ Form ก้อนใหญ่ระดับ 50MB ได้
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Routes สำหรับ TBOS
 app.use('/api/part-list', targetRoRoute);

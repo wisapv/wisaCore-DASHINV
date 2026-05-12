@@ -17,5 +17,5 @@ If you are developing a production application, we recommend using TypeScript wi
 
 
 git add .
-git commit -m "mumi0"
+git commit -m "mumi1"
 git push

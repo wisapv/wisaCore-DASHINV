@@ -4,7 +4,6 @@ import {
   X, CheckSquare, Square, Merge, History, Plus, Filter, 
   ArrowRight, AlertTriangle
 } from 'lucide-react';
-// 🔴 Import ไฟล์ใหม่ที่เราเพิ่งสร้าง
 import HandheldManager from './HandheldManager';
 
 const generateBatchId = () => {
@@ -148,7 +147,6 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
       
-      {/* ================= TBOS TAB ================= */}
       {activeTab === 'TBOS' ? (
         <div className="flex flex-col gap-8">
           <div className="flex flex-col gap-2">
@@ -336,7 +334,6 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
           )}
         </div>
       ) : (
-        /* 🔴 เรียกใช้งาน Component ใหม่ที่เราเพิ่งแยกไป */
         <HandheldManager 
           currentBatchId={currentBatchId} 
           previewData={previewData} 
@@ -344,7 +341,6 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         />
       )}
       
-      {/* ================= DOWNLOAD POPUP MODAL ================= */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white rounded-[24px] p-8 w-[400px] shadow-2xl animate-in zoom-in-95 relative">

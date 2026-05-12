@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { 
   Database, Loader2, CheckCircle2, MapPin, 
-  AlertCircle, AlertTriangle, GripVertical, Settings2
+  AlertCircle, AlertTriangle, GripVertical, Settings2, Download
 } from 'lucide-react';
 
 const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
@@ -13,7 +13,6 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
   const [holdData, setHoldData] = useState([]);
   const [remindData, setRemindData] = useState([]);
 
-  // 🔴 สร้าง State สำหรับเปิด/ปิด กล่องลากวาง
   const [showPicManager, setShowPicManager] = useState(false);
   const [dragOverPic, setDragOverPic] = useState(null);
   const fileInputRef = useRef(null);
@@ -50,7 +49,37 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
     e.target.value = null;
   };
 
-  // 🔴 จัดกลุ่มตาม ShortAddr (ตัวอักษร 2-3 ตัวแรกที่ตัดมาจาก Backend)
+  const handleDownloadExcel = async () => {
+    if (!finalHandheldData || finalHandheldData.length === 0) return;
+    
+    try {
+      const response = await fetch('http://localhost:3000/api/handheld-assign/export-excel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: finalHandheldData,
+          fileName: `Handheld_Format_${currentBatchId}`
+        })
+      });
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Handheld_Format_${currentBatchId}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else {
+        alert("Download Failed: Server responded with an error.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error connecting to server");
+    }
+  };
+
   const picGroups = useMemo(() => {
     if (!finalHandheldData) return {};
     const groups = {};
@@ -65,8 +94,8 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
     return groups;
   }, [finalHandheldData]);
 
-  const handleDragStart = (e, shortAddr) => {
-    e.dataTransfer.setData('text/plain', shortAddr);
+  const handleDragStart = (e, shortAddr, sourcePic) => {
+    e.dataTransfer.setData('application/json', JSON.stringify({ shortAddr, sourcePic }));
   };
 
   const handleDragOver = (e, pic) => {
@@ -81,13 +110,15 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
   const handleDrop = (e, targetPic) => {
     e.preventDefault();
     setDragOverPic(null);
-    const draggedShortAddr = e.dataTransfer.getData('text/plain');
-    if (!draggedShortAddr) return;
+    const dataStr = e.dataTransfer.getData('application/json');
+    if (!dataStr) return;
 
-    // 🔴 โยกพาร์ทที่มี ShortAddr ตรงกัน ไปเป็น PIC ใหม่ทั้งหมดแบบยกพวง
-    setFinalHandheldData(prev => prev.map(row => 
-      row.ShortAddr === draggedShortAddr ? { ...row, PIC: targetPic } : row
-    ));
+    try {
+      const { shortAddr, sourcePic } = JSON.parse(dataStr);
+      setFinalHandheldData(prev => prev.map(row => 
+        (row.ShortAddr === shortAddr && row.PIC === sourcePic) ? { ...row, PIC: targetPic } : row
+      ));
+    } catch (err) { console.error(err); }
   };
 
   if (!previewData || previewData.length === 0) {
@@ -104,7 +135,7 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
   return (
     <div className="flex flex-col gap-8 w-full animate-in fade-in pb-10">
       
-      {/* --- 1. Base Data Preview --- */}
+      {/* 1. Base Data Preview */}
       <div className="bg-white border border-gray-100 shadow-sm rounded-[32px] p-10 flex flex-col">
         <div className="flex justify-between items-center mb-8">
           <div>
@@ -119,15 +150,32 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
         {handheldPreview ? (
           <div className="overflow-x-auto border border-gray-200 rounded-xl max-h-[400px]">
             <table className="w-full text-left text-xs whitespace-nowrap relative border-collapse">
-              <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm border-b border-gray-200">
-                <tr className="text-gray-500 uppercase tracking-wider bg-gray-100">
-                  <th className="px-4 py-3">Shop</th><th className="px-4 py-3">Dock</th><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">S.plant</th><th className="px-4 py-3">S.dock</th><th className="px-4 py-3">Part no.</th><th className="px-4 py-3">Part name</th><th className="px-4 py-3">kbn</th><th className="px-4 py-3">Q'ty</th>
+              {/* 🔴 แก้ไข: หัวตาราง 1 พื้นหลังดำ ตัวหนังสือขาว */}
+              <thead className="bg-gray-900 sticky top-0 z-10 shadow-md">
+                <tr className="text-gray-200 uppercase tracking-wider">
+                  <th className="px-4 py-3">Shop</th>
+                  <th className="px-4 py-3">Dock</th>
+                  <th className="px-4 py-3">Supplier</th>
+                  <th className="px-4 py-3">S.plant</th>
+                  <th className="px-4 py-3">S.dock</th>
+                  <th className="px-4 py-3">Part no.</th>
+                  <th className="px-4 py-3">Part name</th>
+                  <th className="px-4 py-3">kbn</th>
+                  <th className="px-4 py-3">Q'ty</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {handheldPreview.slice(0, 50).map((r, i) => (
-                  <tr key={i} className="hover:bg-orange-50/50">
-                    <td className="px-4 py-3 font-bold">{r['Shop']}</td><td className="px-4 py-3">{r['Dock']}</td><td className="px-4 py-3">{r['Supplier']}</td><td className="px-4 py-3">{r['S.plant']}</td><td className="px-4 py-3">{r['S.dock']}</td><td className="px-4 py-3">{r['Part no.']}</td><td className="px-4 py-3 truncate max-w-[150px]">{r['Part name']}</td><td className="px-4 py-3">{r['kbn']}</td><td className="px-4 py-3">{r['Q\'ty']}</td>
+                  <tr key={i} className="hover:bg-orange-50/50 transition-colors">
+                    <td className="px-4 py-3 font-bold">{r['Shop']}</td>
+                    <td className="px-4 py-3">{r['Dock']}</td>
+                    <td className="px-4 py-3">{r['Supplier']}</td>
+                    <td className="px-4 py-3">{r['S.plant']}</td>
+                    <td className="px-4 py-3">{r['S.dock']}</td>
+                    <td className="px-4 py-3">{r['Part no.']}</td>
+                    <td className="px-4 py-3 truncate max-w-[150px]">{r['Part name']}</td>
+                    <td className="px-4 py-3">{r['kbn']}</td>
+                    <td className="px-4 py-3">{r['Q\'ty']}</td>
                   </tr>
                 ))}
               </tbody>
@@ -140,7 +188,7 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
         )}
       </div>
 
-      {/* --- 2. Addr Upload & Final Result --- */}
+      {/* 2. Addr Upload & Final Result */}
       {handheldPreview && (
         <div className="bg-white border border-gray-100 shadow-sm rounded-[32px] p-10 flex flex-col animate-in fade-in slide-in-from-bottom-4">
           <div className="flex flex-col gap-2 mb-8">
@@ -166,23 +214,30 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
               
               <div className="flex justify-between items-center bg-gray-50 border border-gray-200 px-6 py-4 rounded-2xl">
                 <div>
-                  <h3 className="font-bold text-dark">PIC Configuration</h3>
-                  <p className="text-xs text-gray-500">Enable this to manually drag and drop address groups to different PICs.</p>
+                  <h3 className="font-bold text-dark">PIC & Data Management</h3>
+                  <p className="text-xs text-gray-500">Manage assignments and export your final handheld configuration.</p>
                 </div>
-                {/* 🔴 ปุ่มเปิด/ปิด แผง Drag & Drop */}
-                <button 
-                  onClick={() => setShowPicManager(!showPicManager)}
-                  className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${showPicManager ? 'bg-dark text-white' : 'bg-white border-2 border-gray-200 text-dark hover:border-primary'}`}
-                >
-                  <Settings2 size={16} />
-                  {showPicManager ? 'Close PIC Manager' : 'Reassign PIC'}
-                </button>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={handleDownloadExcel}
+                    className="bg-white border-2 border-primary text-primary px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-orange-50 transition-all flex items-center gap-2"
+                  >
+                    <Download size={16} />
+                    Download Excel
+                  </button>
+                  <button 
+                    onClick={() => setShowPicManager(!showPicManager)}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${showPicManager ? 'bg-dark text-white' : 'bg-white border-2 border-gray-200 text-dark hover:border-primary'}`}
+                  >
+                    <Settings2 size={16} />
+                    {showPicManager ? 'Close PIC Manager' : 'Reassign PIC'}
+                  </button>
+                </div>
               </div>
 
-              {/* 🔴 แผง Drag & Drop (จะโชว์ก็ต่อเมื่อกดปุ่ม) */}
               {showPicManager && (
-                <div className="bg-orange-50/50 p-6 rounded-2xl border border-orange-200 animate-in zoom-in-95">
-                  <h3 className="font-bold text-dark mb-4 flex items-center gap-2"><GripVertical size={20} className="text-primary"/> Drag & Drop Address Groups</h3>
+                <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800 animate-in zoom-in-95">
+                  <h3 className="font-bold text-white mb-4 flex items-center gap-2"><GripVertical size={20} className="text-primary"/> Drag & Drop Address Groups</h3>
                   <div className="flex gap-4 overflow-x-auto pb-4 snap-x">
                     {Object.entries(picGroups).map(([pic, addrMap]) => (
                       <div 
@@ -190,12 +245,11 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
                         onDragOver={(e) => handleDragOver(e, pic)}
                         onDragLeave={handleDragLeave}
                         onDrop={(e) => handleDrop(e, pic)}
-                        className={`min-w-[200px] bg-white rounded-xl p-4 shadow-sm border-2 transition-all snap-start
-                          ${dragOverPic === pic ? 'border-primary bg-orange-100 scale-105' : 'border-transparent'}`}
+                        className={`min-w-[200px] bg-gray-800 rounded-xl p-4 shadow-sm border-2 transition-all snap-start
+                          ${dragOverPic === pic ? 'border-primary bg-gray-700 scale-105' : 'border-transparent'}`}
                       >
-                        <div className="flex justify-between items-center mb-3 pb-2 border-b border-gray-100">
-                          <h4 className="font-bold text-dark text-lg">PIC: <span className="text-primary">{pic}</span></h4>
-                          <span className="text-[10px] font-bold bg-gray-100 text-gray-500 px-2 py-1 rounded-full">{Object.keys(addrMap).length} Addr</span>
+                        <div className="flex justify-center items-center mb-4 py-2 rounded-xl bg-primary shadow-lg">
+                          <h4 className="font-bold text-white text-xl">{pic}</h4>
                         </div>
                         
                         <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto pr-1">
@@ -203,15 +257,11 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
                             <div 
                               key={shortAddr}
                               draggable
-                              onDragStart={(e) => handleDragStart(e, shortAddr)}
-                              className="bg-gray-50 border border-gray-200 p-2.5 rounded-lg flex justify-between items-center cursor-grab active:cursor-grabbing hover:border-primary hover:text-primary transition-colors group"
+                              onDragStart={(e) => handleDragStart(e, shortAddr, pic)}
+                              className="bg-white rounded-2xl p-2.5 flex justify-between items-center cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-primary transition-all group shadow-sm"
                             >
-                              <span className="font-mono text-sm font-bold group-hover:text-primary">
-                                {shortAddr} {/* 🔴 โชว์แค่ตัวย่อ 2-3 ตัวตามที่คุณต้องการ ไม่มีจุดไข่ปลาแล้ว */}
-                              </span>
-                              <span className="text-[10px] bg-white border border-gray-100 px-1.5 py-0.5 rounded text-gray-400 font-bold">
-                                {count} items
-                              </span>
+                              <span className="font-mono text-sm font-bold text-dark group-hover:text-primary">{shortAddr}</span>
+                              <span className="text-[10px] bg-gray-100 px-2 py-0.5 rounded-full text-gray-500 font-bold">{count} items</span>
                             </div>
                           ))}
                         </div>
@@ -221,23 +271,33 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
                 </div>
               )}
 
-              {/* 🔴 ตารางหลัก Final Result */}
               <div className="overflow-x-auto border border-gray-200 rounded-xl animate-in fade-in">
-                <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-                  <h3 className="font-bold text-dark">Final Handheld Format Preview</h3>
+                <div className="px-6 py-4 bg-black border-b border-gray-200 flex justify-between items-center">
+                  <h3 className="font-bold text-white ">Final Handheld Format Preview</h3>
                   <span className="text-xs font-bold bg-primary text-white px-3 py-1 rounded-full shadow-sm">Total: {finalHandheldData.length} Rows</span>
                 </div>
                 <div className="max-h-[400px] overflow-y-auto">
                   <table className="w-full text-left text-xs whitespace-nowrap">
-                    <thead className="bg-white sticky top-0 shadow-sm border-b border-gray-200 z-10">
-                      <tr className="text-gray-500 uppercase">
-                        <th className="px-4 py-3 bg-gray-100">Shop</th><th className="px-4 py-3">Dock</th><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Part no.</th><th className="px-4 py-3">Part name</th><th className="px-4 py-3 text-blue-600 font-bold bg-blue-50/50">Address</th><th className="px-4 py-3 text-orange-600 font-bold bg-orange-50/50">PIC</th>
+                    {/* 🔴 แก้ไข: หัวตาราง 2 พื้นหลังดำ ตัวหนังสือขาว และปรับสี Address/PIC ให้สว่างขึ้น */}
+                    <thead className="bg-gray-100 sticky top-0 ">
+                      <tr className="text-black font-bold uppercase">
+                        <th className="px-4 py-3">Shop</th>
+                        <th className="px-4 py-3">Dock</th>
+                        <th className="px-4 py-3">Supplier</th>
+                        <th className="px-4 py-3">Part no.</th>
+                        <th className="px-4 py-3">Part name</th>
+                        <th className="px-4 py-3">Address</th>
+                        <th className="px-4 py-3">PIC</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {finalHandheldData.slice(0, 100).map((r, i) => (
                         <tr key={i} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-4 py-3 font-bold bg-gray-50/50">{r.Shop}</td><td className="px-4 py-3">{r.Dock}</td><td className="px-4 py-3">{r.Supplier}</td><td className="px-4 py-3">{r['Part no.']}</td><td className="px-4 py-3 truncate max-w-[150px]">{r['Part name']}</td>
+                          <td className="px-4 py-3 font-bold bg-gray-50/50">{r.Shop}</td>
+                          <td className="px-4 py-3">{r.Dock}</td>
+                          <td className="px-4 py-3">{r.Supplier}</td>
+                          <td className="px-4 py-3">{r['Part no.']}</td>
+                          <td className="px-4 py-3 truncate max-w-[150px]">{r['Part name']}</td>
                           <td className="px-4 py-3 text-blue-700 font-medium bg-blue-50/20">{r.Addr}</td>
                           <td className="px-4 py-3 font-bold text-orange-600 bg-orange-50/20">
                             <span className="bg-white border border-orange-200 px-2 py-0.5 rounded shadow-sm">{r.PIC}</span>
@@ -249,7 +309,6 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
                 </div>
               </div>
 
-              {/* Exception Boxes */}
               {(remindData.length > 0 || holdData.length > 0) && (
                 <div className="flex gap-6">
                   {remindData.length > 0 && (

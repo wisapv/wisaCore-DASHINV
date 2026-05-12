@@ -6,6 +6,13 @@ const { connectDB } = require('../database');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+const generateExcelBuffer = (dataRows) => {
+    const wb = xlsx.utils.book_new();
+    const ws = xlsx.utils.json_to_sheet(dataRows);
+    xlsx.utils.book_append_sheet(wb, ws, "Handheld_Format");
+    return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+};
+
 function parseExcelDate(excelDate) {
     if (!excelDate) return new Date('invalid');
     if (typeof excelDate === 'number') return new Date(Math.round((excelDate - 25569) * 86400 * 1000));
@@ -13,6 +20,23 @@ function parseExcelDate(excelDate) {
     if (/^\d{8}$/.test(cleanStr)) return new Date(cleanStr.slice(0, 4), parseInt(cleanStr.slice(4, 6)) - 1, cleanStr.slice(6, 8));
     return new Date(cleanStr);
 }
+
+router.post('/export-excel', express.json({ limit: '50mb' }), (req, res) => {
+    try {
+        const { data, fileName } = req.body;
+        if (!data) return res.status(400).json({ error: "No data provided" });
+
+        const jsonData = typeof data === 'string' ? JSON.parse(data) : data;
+        const buffer = generateExcelBuffer(jsonData);
+        
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName || 'Handheld_Data'}.xlsx`);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.send(buffer);
+    } catch (err) {
+        console.error("Export Excel Error:", err);
+        res.status(500).send("Export Failed");
+    }
+});
 
 router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
     try {
@@ -105,6 +129,44 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
             }
         });
 
+        const evaluatePicAndShop = (addrStr, dock, supplier) => {
+            if (!addrStr) return { pic: 'A', shop: 'A', shouldDup: false };
+            
+            const addr = addrStr.trim().toUpperCase();
+            const cleanAddr = addr.replace(/\s/g, ''); 
+            const supl = supplier.trim().toUpperCase();
+
+            // 1. W
+            if (dock === 'SW' || dock === 'S9') return { pic: 'W', shop: 'W', shouldDup: true };
+            // 2. T
+            if (dock === 'ST') return { pic: 'T', shop: 'T', shouldDup: true };
+            // 3. K
+            if (dock === 'SK') return { pic: 'K', shop: 'K', shouldDup: true };
+            
+            // 4. TTAT
+            if (dock === 'S6') {
+                if (addr.startsWith('SS') && supl === 'TBAS') {
+                    return { pic: 'S4', shop: 'A', shouldDup: false };
+                }
+                if (addr.startsWith('SS') || addr.startsWith('TUSHO')) {
+                    return { pic: 'TTAT', shop: 'TTAT', shouldDup: false };
+                }
+            }
+
+            // 5. R
+            if (addr.startsWith('R.')) return { pic: 'R', shop: 'R', shouldDup: false };
+
+            // 6. Shop A
+            const shop = 'A';
+            if (addr.startsWith('PC') || addr.startsWith('WH') || cleanAddr.length === 4) return { pic: 'PC', shop, shouldDup: true };
+            if (/^(SBP|BP1|CH1|CH2|DO1|EG1|FA1|FN1|FN2|FN3|FN4|FR1|FR2|IP1|TR1|TR2|FA|SQ|SK)/.test(addr)) return { pic: 'A', shop, shouldDup: false };
+            if (addr.startsWith('S4') || addr.startsWith('SS')) return { pic: 'S4', shop, shouldDup: false };
+            if (/^(RA1|S5|SJ|SL|SM|SN|SO|SP)/.test(addr)) return { pic: 'S5', shop, shouldDup: false };
+            if (addr.startsWith('S') && !/^(S5|S4|SJ|SL|SM|SN|SO|SP|SBP|SQ|SK)/.test(addr)) return { pic: 'ALS', shop, shouldDup: true };
+
+            return { pic: 'A', shop, shouldDup: false };
+        };
+
         baseDataList.forEach(item => {
             const { t, p } = item;
             const ppDockValue = String(p['DOCK'] || p['DOCK '] || '').replace(/\s/g, '');
@@ -131,75 +193,26 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
                 return;
             }
 
-            const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
             const source = String(t['Source'] || t['Source '] || '').trim();
+            const ppSupplier = String(p['SUPL'] || p['SUPL '] || '').trim();
             
-            // 🔴 1. คลีนดาต้าและแปลงเป็น "ตัวพิมพ์ใหญ่ทั้งหมด" เพื่อแก้ปัญหา r. ไม่ตรงกับ R.
             const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
             const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
-            
-            // ลบเว้นวรรคตรงกลางออกทั้งหมด เอาไว้นับ Length=4 สำหรับ PC (เช่น F  -  01 กลายเป็น F-01)
-            const kanbanAddrClean = kanbanAddrRaw.replace(/\s/g, ''); 
 
-            let shop = 'A';
-            let pic = 'A';
-            let shouldDup = false;
-            let linesidePic = 'A';
+            const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
 
-            // 🔴 2. เริ่มเช็คเงื่อนไข Shop หลัก
-            if (ppDock === 'SW' || ppDock === 'S9') {
-                shop = 'W'; pic = 'W'; shouldDup = true; linesidePic = 'W';
-            } 
-            else if (ppDock === 'ST') {
-                shop = 'T'; pic = 'T'; shouldDup = true; linesidePic = 'T';
-            } 
-            else if (ppDock === 'SK') {
-                shop = 'K'; pic = 'K'; shouldDup = true; linesidePic = 'K';
-            } 
-            else if (ppDock === 'S6' && (kanbanAddrRaw.startsWith('SS') || kanbanAddrRaw.startsWith('TUSHO')) && supplier !== 'TBOS') {
-                shop = 'TTAT'; pic = 'TTAT'; shouldDup = false; 
-            } 
-            else if (kanbanAddrRaw.startsWith('R.')) {
-                shop = 'R'; pic = 'R'; shouldDup = false; 
-            } 
-            else {
-                // 🔴 3. กฎเฉพาะสำหรับ Shop A (เรียงลำดับใหม่ให้เป๊ะที่สุด)
-                shop = 'A';
-                
-                // 1. ถ้าขึ้นต้นด้วย PC เป๊ะๆ
-                if (kanbanAddrRaw.startsWith('PC')) {
-                    pic = 'PC'; shouldDup = true; linesidePic = 'A';
-                } 
-                // 2. ถ้าขึ้นต้นด้วยพวกแก๊ง PIC A
-                else if (/^(SBP|BP1|CH1|CH2|DO1|EG1|FA1|FN1|FN2|FN3|FN4|FR1|FR2|IP1|TR1|TR2|FA)/.test(kanbanAddrRaw)) {
-                    pic = 'A'; shouldDup = false;
-                } 
-                // 3. แก๊ง S4
-                else if (kanbanAddrRaw.startsWith('S4') || (ppDock === 'S4' && kanbanAddrRaw.startsWith('SS'))) {
-                    pic = 'S4'; shouldDup = false;
-                } 
-                // 4. แก๊ง S5
-                else if (/^(RA1|S5|SJ|SL|SM|SN|SO|SP)/.test(kanbanAddrRaw)) {
-                    pic = 'S5'; shouldDup = false;
-                } 
-                // 5. แก๊ง ALS (ขึ้นต้นด้วย S แต่ไม่ชนกับแก๊งข้างบน)
-                else if (kanbanAddrRaw.startsWith('S') && !/^(S5|S4|SJ|SL|SM|SN|SO|SP|SBP)/.test(kanbanAddrRaw)) {
-                    pic = 'ALS'; shouldDup = true; linesidePic = 'A';
-                } 
-                // 6. 🔴 เงื่อนไขตกค้าง ถ้าสั้น 4 ตัว (เช่น F-01) ถึงจะให้เป็น PC (วางไว้ท้ายสุดจะได้ไม่แย่งซีนตัวอื่น)
-                else if (kanbanAddrClean.length === 4) {
-                    pic = 'PC'; shouldDup = true; linesidePic = 'A';
-                }
-                // 7. นอกเหนือจากนี้ โยนเข้า A หมด
-                else {
-                    pic = 'A'; shouldDup = false;
-                }
-            }
-
-            // 🔴 4. ฟังก์ชันสร้างข้อมูล
             const createFinalRow = (address, picType, finalShop, isLineside = false) => {
-                // ตัด 3 ตัว สำหรับ Lineside และตัด 2 ตัว สำหรับ Kanban ตามที่สั่ง
-                const shortAddr = isLineside ? address.substring(0, 3) : address.substring(0, 2);
+                // 🔴 จุดแก้ไข: เช็คว่าถ้า PIC เป็น A, R, K ให้ตัด 3 ตัวเลย
+                let shortAddrLength = 2; // ค่าเริ่มต้น 2 ตัว
+                
+                if (['A', 'R', 'K'].includes(picType)) {
+                    shortAddrLength = 3; // PIC A, R, K ใช้ 3 ตัว
+                } else if (isLineside) {
+                    shortAddrLength = 3; // Lineside อื่นๆ ใช้ 3 ตัวตามเดิม
+                }
+
+                const shortAddr = address.substring(0, shortAddrLength);
+
                 return {
                     Shop: finalShop,
                     Group: 'SR481D' + finalShop + source,
@@ -212,21 +225,18 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
                     kbn: p['KBN'] || p['KBN '] || "",
                     "Q'ty": p['QTY /CONT'] || p['QTY /CONT '] || "",
                     Addr: address,
-                    ShortAddr: shortAddr, 
+                    ShortAddr: shortAddr, // 🔴 นำความยาวใหม่ที่คำนวณได้ไปใช้
                     PIC: picType
                 };
             };
 
-            // บรรทัดแรก (Kanban Print Addr)
             if (kanbanAddrRaw) {
-                finalData.push(createFinalRow(kanbanAddrRaw, pic, shop, false));
+                finalData.push(createFinalRow(kanbanAddrRaw, kanbanEval.pic, kanbanEval.shop, false));
             }
             
-            // บรรทัดที่สอง (Lineside Addr) 
-            // - ถ้า shouldDup เป็น true (เช่น PC, ALS, W, T, K) และมีข้อมูล Lineside ก็จะสร้าง
-            // - picType ของบรรทัดนี้ จะถูกระบุมาจากตัวแปร linesidePic (ซึ่งตั้งเป็น A ไว้ให้แล้วสำหรับ PC/ALS)
-            if (shouldDup && linesideAddrRaw) {
-                finalData.push(createFinalRow(linesideAddrRaw, linesidePic, shop, true));
+            if (kanbanEval.shouldDup && linesideAddrRaw) {
+                const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
+                finalData.push(createFinalRow(linesideAddrRaw, linesideEval.pic, kanbanEval.shop, true));
             }
         });
 

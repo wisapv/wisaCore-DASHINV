@@ -10,6 +10,45 @@ const { getField } = require('../lib/fieldAliases');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+const evaluatePicAndShop = (addrStr, dock, supplier) => {
+    if (!addrStr) return { pic: 'A', shop: 'A', shouldDup: false };
+
+    const addr = addrStr.trim().toUpperCase();
+    const cleanAddr = addr.replace(/\s/g, '');
+    const supl = supplier.trim().toUpperCase();
+
+    // 1. W
+    if (dock === 'SW' || dock === 'S9') return { pic: 'W', shop: 'W', shouldDup: true };
+    // 2. T
+    if (dock === 'ST') return { pic: 'T', shop: 'T', shouldDup: true };
+    // 3. K
+    if (dock === 'SK') return { pic: 'K', shop: 'K', shouldDup: true };
+
+    // 4. TTAT
+    if (dock === 'S6') {
+        if (addr.startsWith('SS') && supl === 'TBAS') {
+            return { pic: 'S4', shop: 'A', shouldDup: false };
+        }
+        if (addr.startsWith('SS') || addr.startsWith('TUSHO')) {
+            return { pic: 'TTAT', shop: 'TTAT', shouldDup: false };
+        }
+    }
+
+    // 5. R
+    if (addr.startsWith('R.')) return { pic: 'R', shop: 'R', shouldDup: false };
+
+    // 6. Shop A
+    const shop = 'A';
+    if (addr.startsWith('PC') || addr.startsWith('WH') || cleanAddr.length === 4) return { pic: 'PC', shop, shouldDup: true };
+    if (/^(SBP|BP1|CH1|CH2|DO1|EG1|FA1|FN1|FN2|FN3|FN4|FR1|FR2|IP1|TR1|TR2|FA|SQ|SK)/.test(addr)) return { pic: 'A', shop, shouldDup: false };
+    if (addr.startsWith('S4') || addr.startsWith('SS')) return { pic: 'S4', shop, shouldDup: false };
+    if (/^(RA1|S5|SJ|SL|SM|SN|SO|SP)/.test(addr)) return { pic: 'S5', shop, shouldDup: false };
+    // ALS parts are counted once at the Kanban Print Address only — no Lineside duplicate.
+    if (addr.startsWith('S') && !/^(S5|S4|SJ|SL|SM|SN|SO|SP|SBP|SQ|SK)/.test(addr)) return { pic: 'ALS', shop, shouldDup: false };
+
+    return { pic: 'A', shop, shouldDup: false };
+};
+
 const generateExcelBuffer = (dataRows) => {
     const wb = xlsx.utils.book_new();
     const ws = xlsx.utils.json_to_sheet(dataRows);
@@ -108,44 +147,6 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
             }
         });
 
-        const evaluatePicAndShop = (addrStr, dock, supplier) => {
-            if (!addrStr) return { pic: 'A', shop: 'A', shouldDup: false };
-            
-            const addr = addrStr.trim().toUpperCase();
-            const cleanAddr = addr.replace(/\s/g, ''); 
-            const supl = supplier.trim().toUpperCase();
-
-            // 1. W
-            if (dock === 'SW' || dock === 'S9') return { pic: 'W', shop: 'W', shouldDup: true };
-            // 2. T
-            if (dock === 'ST') return { pic: 'T', shop: 'T', shouldDup: true };
-            // 3. K
-            if (dock === 'SK') return { pic: 'K', shop: 'K', shouldDup: true };
-            
-            // 4. TTAT
-            if (dock === 'S6') {
-                if (addr.startsWith('SS') && supl === 'TBAS') {
-                    return { pic: 'S4', shop: 'A', shouldDup: false };
-                }
-                if (addr.startsWith('SS') || addr.startsWith('TUSHO')) {
-                    return { pic: 'TTAT', shop: 'TTAT', shouldDup: false };
-                }
-            }
-
-            // 5. R
-            if (addr.startsWith('R.')) return { pic: 'R', shop: 'R', shouldDup: false };
-
-            // 6. Shop A
-            const shop = 'A';
-            if (addr.startsWith('PC') || addr.startsWith('WH') || cleanAddr.length === 4) return { pic: 'PC', shop, shouldDup: true };
-            if (/^(SBP|BP1|CH1|CH2|DO1|EG1|FA1|FN1|FN2|FN3|FN4|FR1|FR2|IP1|TR1|TR2|FA|SQ|SK)/.test(addr)) return { pic: 'A', shop, shouldDup: false };
-            if (addr.startsWith('S4') || addr.startsWith('SS')) return { pic: 'S4', shop, shouldDup: false };
-            if (/^(RA1|S5|SJ|SL|SM|SN|SO|SP)/.test(addr)) return { pic: 'S5', shop, shouldDup: false };
-            if (addr.startsWith('S') && !/^(S5|S4|SJ|SL|SM|SN|SO|SP|SBP|SQ|SK)/.test(addr)) return { pic: 'ALS', shop, shouldDup: true };
-
-            return { pic: 'A', shop, shouldDup: false };
-        };
-
         baseDataList.forEach(item => {
             const { t, p } = item;
             const ppDockValue = String(p['DOCK'] || p['DOCK '] || '').replace(/\s/g, '');
@@ -215,7 +216,7 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
             
             if (kanbanEval.shouldDup && linesideAddrRaw) {
                 const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
-                finalData.push(createFinalRow(linesideAddrRaw, linesideEval.pic, kanbanEval.shop, true));
+                finalData.push(createFinalRow(linesideAddrRaw, linesideEval.pic, linesideEval.shop, true));
             }
         });
 
@@ -228,3 +229,4 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.evaluatePicAndShop = evaluatePicAndShop;

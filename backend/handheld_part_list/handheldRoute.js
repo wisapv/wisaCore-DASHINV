@@ -1,7 +1,8 @@
 const express = require('express');
 const { connectDB } = require('../database');
-const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
+const { getField } = require('../lib/fieldAliases');
 const router = express.Router();
 
 router.get('/preview-handheld', async (req, res) => {
@@ -17,14 +18,21 @@ router.get('/preview-handheld', async (req, res) => {
 
     const { ppMap, duplicateKeys } = buildPpIndex(ppRows, { excludePartDesc: ['WHEEL ASSY'] });
 
-    const previewData = [];
-
+    const cleanedRows = [];
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
-      const { valid } = cleanTargetRow(t);
+      const { valid, isDockEqualsSupplier } = cleanTargetRow(t, { mode: 'handheld' });
       if (!valid) continue;
+      t.isDockEqualsSupplier = isDockEqualsSupplier;
+      cleanedRows.push(t);
+    }
+    const dedupedRows = dedupeDockEqualsSupplierRows(cleanedRows, (row) => getField(row, 'PART_NO_TG'));
 
+    const previewData = [];
+
+    for (const t of dedupedRows) {
       const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
+      const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
       const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
 
       const keyTG = buildMatchKey(tgDock, partNo);
@@ -32,7 +40,7 @@ router.get('/preview-handheld', async (req, res) => {
 
       if (p) {
         const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-        const shop = computeShop(ppDock, { mode: 'handheld' });
+        const shop = supplier === 'TTAT' ? 'TTAT' : computeShop(ppDock, { mode: 'handheld' });
 
         previewData.push({
           "Shop": shop,

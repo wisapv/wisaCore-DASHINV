@@ -3,9 +3,10 @@ const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
-const { buildPpIndex, cleanTargetRow } = require('../lib/partMatching');
+const { buildPpIndex, cleanTargetRow, dedupeDockEqualsSupplierRows } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { parseExcelDate } = require('../lib/dateUtils');
+const { getField } = require('../lib/fieldAliases');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -74,11 +75,17 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
         const remindData = []; 
         const baseDataList = [];
 
+        const cleanedRows = [];
         tgRaw.forEach(r => {
             const t = JSON.parse(r.data);
-            const { valid } = cleanTargetRow(t);
+            const { valid, isDockEqualsSupplier } = cleanTargetRow(t, { mode: 'handheld' });
             if (!valid) return;
+            t.isDockEqualsSupplier = isDockEqualsSupplier;
+            cleanedRows.push(t);
+        });
+        const dedupedRows = dedupeDockEqualsSupplierRows(cleanedRows, (row) => getField(row, 'PART_NO_TG'));
 
+        dedupedRows.forEach(t => {
             const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
             const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
             const partNoRaw = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();

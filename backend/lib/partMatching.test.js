@@ -1,59 +1,117 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildPpIndex, cleanTargetRow, computeShop } = require('./partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows } = require('./partMatching');
 
 function ppRow(data) {
   return { data: JSON.stringify(data) };
 }
 
-test('cleanTargetRow: TTAT supplier dropped', () => {
+test('cleanTargetRow mode "main": TTAT supplier dropped', () => {
   const result = cleanTargetRow({
     'Part No 12 Digits': '123456789012',
     'Supplier': 'TTAT',
     'Dock IH routing': 'SW',
-  });
+  }, { mode: 'main' });
   assert.strictEqual(result.valid, false);
 });
 
-test('cleanTargetRow: dock equals supplier dropped', () => {
+test('cleanTargetRow mode "main": dock equals supplier dropped', () => {
   const result = cleanTargetRow({
     'Part No 12 Digits': '123456789012',
     'Supplier': 'SW',
     'Dock IH routing': 'SW',
-  });
+  }, { mode: 'main' });
   assert.strictEqual(result.valid, false);
 });
 
-test('cleanTargetRow: empty part no dropped', () => {
+test('cleanTargetRow mode "main": empty part no dropped', () => {
   const result = cleanTargetRow({
     'Part No 12 Digits': '',
     'Supplier': 'ABC',
     'Dock IH routing': 'SW',
-  });
+  }, { mode: 'main' });
   assert.strictEqual(result.valid, false);
 });
 
-test('cleanTargetRow: "N/A" part no dropped (case-insensitive)', () => {
+test('cleanTargetRow mode "main": "N/A" part no dropped (case-insensitive)', () => {
   assert.strictEqual(cleanTargetRow({
     'Part No 12 Digits': 'N/A',
     'Supplier': 'ABC',
     'Dock IH routing': 'SW',
-  }).valid, false);
+  }, { mode: 'main' }).valid, false);
 
   assert.strictEqual(cleanTargetRow({
     'Part No 12 Digits': 'n/a',
     'Supplier': 'ABC',
     'Dock IH routing': 'SW',
-  }).valid, false);
+  }, { mode: 'main' }).valid, false);
 });
 
-test('cleanTargetRow: valid row passes', () => {
+test('cleanTargetRow mode "main": valid row passes', () => {
   const result = cleanTargetRow({
     'Part No 12 Digits': '123456789012',
     'Supplier': 'ABC',
     'Dock IH routing': 'SW',
-  });
+  }, { mode: 'main' });
   assert.strictEqual(result.valid, true);
+});
+
+test('cleanTargetRow mode "handheld": TTAT supplier kept (valid)', () => {
+  const result = cleanTargetRow({
+    'Part No 12 Digits': '123456789012',
+    'Supplier': 'TTAT',
+    'Dock IH routing': 'S6',
+  }, { mode: 'handheld' });
+  assert.strictEqual(result.valid, true);
+});
+
+test('cleanTargetRow mode "handheld": dock equals supplier kept (valid) and flagged', () => {
+  const result = cleanTargetRow({
+    'Part No 12 Digits': '123456789012',
+    'Supplier': 'SW',
+    'Dock IH routing': 'SW',
+  }, { mode: 'handheld' });
+  assert.strictEqual(result.valid, true);
+  assert.strictEqual(result.isDockEqualsSupplier, true);
+});
+
+test('cleanTargetRow mode "handheld": empty/"N/A" part no still invalid', () => {
+  assert.strictEqual(cleanTargetRow({
+    'Part No 12 Digits': '',
+    'Supplier': 'ABC',
+    'Dock IH routing': 'SW',
+  }, { mode: 'handheld' }).valid, false);
+
+  assert.strictEqual(cleanTargetRow({
+    'Part No 12 Digits': 'N/A',
+    'Supplier': 'ABC',
+    'Dock IH routing': 'SW',
+  }, { mode: 'handheld' }).valid, false);
+});
+
+test('dedupeDockEqualsSupplierRows: keeps first occurrence per key within the subgroup', () => {
+  const rows = [
+    { partNo: 'P1', isDockEqualsSupplier: true, source: 'S1' },
+    { partNo: 'P1', isDockEqualsSupplier: true, source: 'S2' },
+    { partNo: 'P1', isDockEqualsSupplier: true, source: 'S3' },
+  ];
+
+  const result = dedupeDockEqualsSupplierRows(rows, (row) => row.partNo);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].source, 'S1');
+});
+
+test('dedupeDockEqualsSupplierRows: non-subgroup rows pass through untouched, order preserved', () => {
+  const rows = [
+    { partNo: 'A', isDockEqualsSupplier: false, tag: 'keep-1' },
+    { partNo: 'P1', isDockEqualsSupplier: true, tag: 'dup-first' },
+    { partNo: 'B', isDockEqualsSupplier: false, tag: 'keep-2' },
+    { partNo: 'P1', isDockEqualsSupplier: true, tag: 'dup-second' },
+    { partNo: 'C', isDockEqualsSupplier: false, tag: 'keep-3' },
+  ];
+
+  const result = dedupeDockEqualsSupplierRows(rows, (row) => row.partNo);
+  assert.deepStrictEqual(result.map((r) => r.tag), ['keep-1', 'dup-first', 'keep-2', 'keep-3']);
 });
 
 test('computeShop: main mode branches', () => {

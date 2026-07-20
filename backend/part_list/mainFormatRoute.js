@@ -35,7 +35,7 @@ router.get('/download-main', async (req, res) => {
     const validRows = [];
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
-      const { valid } = cleanTargetRow(t);
+      const { valid } = cleanTargetRow(t, { mode: 'main' });
       if (!valid) continue;
 
       const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
@@ -108,7 +108,7 @@ router.get('/preview-main', async (req, res) => {
 
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
-      const { valid } = cleanTargetRow(t);
+      const { valid } = cleanTargetRow(t, { mode: 'main' });
       if (!valid) continue;
 
       const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();

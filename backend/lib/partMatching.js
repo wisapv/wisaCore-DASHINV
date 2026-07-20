@@ -44,17 +44,52 @@ function buildPpIndex(ppRows, { onlyActive = true, excludePartDesc = [] } = {}) 
   return { ppMap, allPpMap, duplicateKeys };
 }
 
-function cleanTargetRow(t) {
+// mode 'main': TTAT and Dock=Supplier rows are dropped (not physically counted).
+// mode 'handheld': those rows represent parts physically present in the warehouse
+// and must be kept — only empty/N/A part numbers are ever invalid. The caller gets
+// an isDockEqualsSupplier flag so it can dedupe that subgroup afterward.
+function cleanTargetRow(t, { mode } = {}) {
   const partNo = getField(t, 'PART_NO_TG');
   const supplier = getField(t, 'SUPPLIER');
   const dockIH = getField(t, 'DOCK_IH');
 
   if (!partNo) return { valid: false, reason: 'empty part no' };
   if (partNo.toUpperCase() === 'N/A') return { valid: false, reason: 'N/A part no' };
-  if (supplier === 'TTAT') return { valid: false, reason: 'TTAT supplier' };
-  if (dockIH !== '' && dockIH === supplier) return { valid: false, reason: 'dock equals supplier' };
 
-  return { valid: true };
+  const isDockEqualsSupplier = dockIH !== '' && dockIH === supplier;
+
+  if (mode === 'main') {
+    if (supplier === 'TTAT') return { valid: false, reason: 'TTAT supplier' };
+    if (isDockEqualsSupplier) return { valid: false, reason: 'dock equals supplier' };
+    return { valid: true, isDockEqualsSupplier };
+  }
+
+  if (mode === 'handheld') {
+    return { valid: true, isDockEqualsSupplier };
+  }
+
+  throw new Error(`cleanTargetRow: unknown mode "${mode}"`);
+}
+
+// Within the Dock=Supplier subgroup, keep only the first occurrence per keyFn(row)
+// (original order) — these tend to contain duplicate rows for the same physical
+// part differing only by Source. Rows outside the subgroup pass through untouched.
+function dedupeDockEqualsSupplierRows(rows, keyFn) {
+  const seenKeys = new Set();
+  const result = [];
+
+  for (const row of rows) {
+    if (!row.isDockEqualsSupplier) {
+      result.push(row);
+      continue;
+    }
+    const key = keyFn(row);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    result.push(row);
+  }
+
+  return result;
 }
 
 // mode 'main' has no 'T' branch and mode 'handheld' does: the handheld dock
@@ -76,4 +111,4 @@ function computeShop(ppDock, { mode }) {
   throw new Error(`computeShop: unknown mode "${mode}"`);
 }
 
-module.exports = { buildPpIndex, cleanTargetRow, computeShop };
+module.exports = { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows };

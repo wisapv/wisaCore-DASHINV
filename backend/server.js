@@ -5,7 +5,6 @@ const { initDB } = require('./database');
 
 const targetRoRoute = require('./part_list/targetRoRoute');
 const partProcRoute = require('./part_list/partProcRoute');
-const mergeRoute = require('./part_list/mergeRoute'); 
 const mainFormatRoute = require('./part_list/mainFormatRoute');
 const batchRoute = require('./part_list/batchRoute');
 const handheldRoute = require('./handheld_part_list/handheldRoute');
@@ -22,8 +21,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Routes สำหรับ TBOS
 app.use('/api/part-list', targetRoRoute);
 app.use('/api/part-list', partProcRoute);
-app.use('/api/part-list', mergeRoute);
-app.use('/api/part-list', mainFormatRoute); 
+app.use('/api/part-list', mainFormatRoute);
 app.use('/api/batches', batchRoute);
 app.use('/api/template', templateRoute); 
 

@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
+const { validateRequiredColumns, REQUIRED_FIELDS_TARGET_RO } = require('../lib/validateColumns');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -15,6 +16,9 @@ router.post('/target-ro', upload.single('file'), async (req, res) => {
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rawData = xlsx.utils.sheet_to_json(sheet);
+
+    const { valid, missing } = validateRequiredColumns(rawData, REQUIRED_FIELDS_TARGET_RO);
+    if (!valid) return res.status(400).json({ error: 'Missing required columns', missing });
 
     const db = await connectDB();
     const now = new Date().toISOString();

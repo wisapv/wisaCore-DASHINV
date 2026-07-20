@@ -3,6 +3,9 @@ const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
+const { buildPpIndex, cleanTargetRow } = require('../lib/partMatching');
+const { buildMatchKey } = require('../lib/keyUtils');
+const { parseExcelDate } = require('../lib/dateUtils');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -12,14 +15,6 @@ const generateExcelBuffer = (dataRows) => {
     xlsx.utils.book_append_sheet(wb, ws, "Handheld_Format");
     return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 };
-
-function parseExcelDate(excelDate) {
-    if (!excelDate) return new Date('invalid');
-    if (typeof excelDate === 'number') return new Date(Math.round((excelDate - 25569) * 86400 * 1000));
-    const cleanStr = String(excelDate).replace(/\s/g, '');
-    if (/^\d{8}$/.test(cleanStr)) return new Date(cleanStr.slice(0, 4), parseInt(cleanStr.slice(4, 6)) - 1, cleanStr.slice(6, 8));
-    return new Date(cleanStr);
-}
 
 router.post('/export-excel', express.json({ limit: '50mb' }), (req, res) => {
     try {
@@ -48,30 +43,8 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
         const ppRaw = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
         const today = new Date(); today.setHours(0, 0, 0, 0);
-        
-        const ppMap = new Map();
-        const allPpMap = new Map(); 
 
-        ppRaw.forEach(r => {
-            const p = JSON.parse(r.data);
-            const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
-            const rowDate = parseExcelDate(tcToDate);
-            
-            const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-            const routing = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
-            const partNo = String(p['PART #'] || p['PART # '] || '').trim();
-            
-            const dockComb = routing !== '' ? routing : ppDock;
-            const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
-            
-            allPpMap.set(keyPP, p); 
-
-            if (rowDate > today) {
-                if (String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase() !== 'WHEEL ASSY') {
-                    ppMap.set(keyPP, p);
-                }
-            }
-        });
+        const { ppMap, allPpMap, duplicateKeys } = buildPpIndex(ppRaw, { excludePartDesc: ['WHEEL ASSY'] });
 
         const addrWorkbook = xlsx.read(req.file.buffer, { type: 'buffer' });
         const addrSheet = addrWorkbook.Sheets[addrWorkbook.SheetNames[0]];
@@ -103,16 +76,15 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
 
         tgRaw.forEach(r => {
             const t = JSON.parse(r.data);
+            const { valid } = cleanTargetRow(t);
+            if (!valid) return;
+
             const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
             const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
             const partNoRaw = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
-            
-            if (!partNoRaw) return; 
-            if (supplier === 'TTAT') return;
-            if (tgDock !== '' && tgDock === supplier) return; 
 
-            const keyTG = (tgDock + partNoRaw).replace(/[\s-]/g, '');
-            const p = ppMap.get(keyTG); 
+            const keyTG = buildMatchKey(tgDock, partNoRaw);
+            const p = ppMap.get(keyTG);
 
             if (p) {
                 baseDataList.push({ t, p, keyTG });
@@ -240,7 +212,7 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
             }
         });
 
-        res.json({ success: true, data: finalData, hold: holdData, remind: remindData });
+        res.json({ success: true, data: finalData, hold: holdData, remind: remindData, duplicateKeys });
 
     } catch (error) {
         console.error(error);

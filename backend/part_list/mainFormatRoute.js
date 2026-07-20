@@ -3,7 +3,9 @@ const { connectDB } = require('../database');
 const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
-const archiver = require('archiver'); 
+const archiver = require('archiver');
+const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatching');
+const { buildMatchKey } = require('../lib/keyUtils');
 
 const router = express.Router();
 
@@ -14,14 +16,6 @@ const generateExcelBuffer = (header, dataRows) => {
   xlsx.utils.book_append_sheet(wb, ws, "Part List");
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 };
-
-function parseExcelDate(excelDate) {
-  if (!excelDate) return new Date('invalid');
-  if (typeof excelDate === 'number') return new Date(Math.round((excelDate - 25569) * 86400 * 1000));
-  const cleanStr = String(excelDate).replace(/\s/g, '');
-  if (/^\d{8}$/.test(cleanStr)) return new Date(cleanStr.slice(0, 4), parseInt(cleanStr.slice(4, 6)) - 1, cleanStr.slice(6, 8));
-  return new Date(cleanStr);
-}
 
 router.get('/download-main', async (req, res) => {
   try {
@@ -36,51 +30,26 @@ router.get('/download-main', async (req, res) => {
     const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
     const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const ppMap = new Map();
-    
-    for (const r of ppRows) {
-      const p = JSON.parse(r.data);
-      const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
-      const rowDate = parseExcelDate(tcToDate);
-      if (isNaN(rowDate) || rowDate <= today) continue; 
-
-      const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-      const prodRouting = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
-      const partNo = String(p['PART #'] || p['PART # '] || '').trim();
-      
-      const dockComb = prodRouting !== '' ? prodRouting : ppDock;
-      p['Dock Comb.'] = dockComb;
-      p['Suffix No'] = partNo.slice(-2);
-      
-      const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
-      ppMap.set(keyPP, p);
-    }
+    const { ppMap } = buildPpIndex(ppRows, { excludePartDesc: ['WHEEL ASSY'] });
 
     const validRows = [];
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
-      const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
+      const { valid } = cleanTargetRow(t);
+      if (!valid) continue;
+
       const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
       const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
       const source = String(t['Source'] || t['Source '] || '').trim();
 
-      if (!partNo) continue;
-      if (supplier === 'TTAT') continue; // Drop TTAT
-      if (tgDock !== '' && tgDock === supplier) continue; // Drop Dock=Supplier
-
-      const keyTG = (tgDock + partNo).replace(/[\s-]/g, '');
-      const p = ppMap.get(keyTG); 
+      const keyTG = buildMatchKey(tgDock, partNo);
+      const p = ppMap.get(keyTG);
 
       if (p) {
-        if (String(p['PART DESC'] || '').trim().toUpperCase() === 'WHEEL ASSY') continue;
-
         const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-        let shop = 'A';
-        if (ppDock === 'SW' || ppDock === 'S9') shop = 'W';
-        else if (ppDock === 'SK') shop = 'K';
+        const shop = computeShop(ppDock, { mode: 'main' });
 
-        if (shop === 'K') continue; 
+        if (shop === 'K') continue;
 
         t['Group'] = 'SR481D' + shop + source;
         validRows.push({ target_data: t, proc_data: p });
@@ -132,57 +101,29 @@ router.get('/preview-main', async (req, res) => {
     const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
     const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const ppMap = new Map();
-    const allPpMap = new Map(); // 🔴 เพิ่ม Map เพื่อเช็ค Remind
-    
-    for (const r of ppRows) {
-      const p = JSON.parse(r.data);
-      const tcToDate = p['T/C TO (UNL)'] || p['T/C TO (UNL) '] || p['T/C TO(UNL)'] || '';
-      const rowDate = parseExcelDate(tcToDate);
-
-      const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-      const prodRouting = String(p['Production Routing'] || p['Production Routing '] || p['Production process routing'] || '').trim();
-      const partNo = String(p['PART #'] || p['PART # '] || '').trim();
-      
-      const dockComb = prodRouting !== '' ? prodRouting : ppDock;
-      p['Dock Comb.'] = dockComb;
-      p['Suffix No'] = partNo.slice(-2);
-      
-      const keyPP = (dockComb + partNo).replace(/[\s-]/g, '');
-      
-      allPpMap.set(keyPP, p); // 🔴 เก็บทุกข้อมูลเพื่ออ้างอิง
-
-      if (isNaN(rowDate) || rowDate <= today) continue; 
-      ppMap.set(keyPP, p);
-    }
+    const { ppMap, allPpMap, duplicateKeys } = buildPpIndex(ppRows, { excludePartDesc: ['WHEEL ASSY'] });
 
     const previewData = [];
     const remindData = []; // 🔴 สร้าง Array สำหรับข้อมูล Remind
 
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
+      const { valid } = cleanTargetRow(t);
+      if (!valid) continue;
+
       const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
       const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
       const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
       const source = String(t['Source'] || t['Source '] || '').trim();
 
-      if (!partNo) continue;
-      if (supplier === 'TTAT') continue; // 🔴 Drop TTAT
-      if (tgDock !== '' && tgDock === supplier) continue; // 🔴 Drop Dock=Supplier
-
-      const keyTG = (tgDock + partNo).replace(/[\s-]/g, '');
-      const p = ppMap.get(keyTG); 
+      const keyTG = buildMatchKey(tgDock, partNo);
+      const p = ppMap.get(keyTG);
 
       if (p) {
-        if (String(p['PART DESC'] || '').trim().toUpperCase() === 'WHEEL ASSY') continue;
-
         const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
-        let shop = 'A';
-        if (ppDock === 'SW' || ppDock === 'S9') shop = 'W';
-        else if (ppDock === 'SK') shop = 'K';
+        const shop = computeShop(ppDock, { mode: 'main' });
 
-        if (shop === 'K') continue; 
+        if (shop === 'K') continue;
 
         t['Group'] = 'SR481D' + shop + source;
 
@@ -229,7 +170,7 @@ router.get('/preview-main', async (req, res) => {
       }
     }
     // 🔴 ส่งข้อมูล remind กลับไปพร้อมกัน
-    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData });
+    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, duplicateKeys });
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
 });
 

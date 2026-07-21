@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test lib/*.test.js"
+    "test": "node --test lib/*.test.js handheld_part_list/*.test.js"
   },
   "keywords": [],
   "author": "",

@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
-const { validateRequiredColumns, REQUIRED_FIELDS_TARGET_RO } = require('../lib/validateColumns');
+const { validateRequiredColumns, findDuplicateHeaders, REQUIRED_FIELDS_TARGET_RO } = require('../lib/validateColumns');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -15,10 +15,16 @@ router.post('/target-ro', upload.single('file'), async (req, res) => {
 
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rawData = xlsx.utils.sheet_to_json(sheet);
 
-    const { valid, missing } = validateRequiredColumns(rawData, REQUIRED_FIELDS_TARGET_RO);
+    const headerRow = xlsx.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
+    const duplicates = findDuplicateHeaders(headerRow);
+    if (duplicates.length > 0) {
+      return res.status(400).json({ error: 'Duplicate column headers found', duplicates });
+    }
+    const { valid, missing } = validateRequiredColumns(headerRow, REQUIRED_FIELDS_TARGET_RO);
     if (!valid) return res.status(400).json({ error: 'Missing required columns', missing });
+
+    const rawData = xlsx.utils.sheet_to_json(sheet);
 
     const db = await connectDB();
     const now = new Date().toISOString();

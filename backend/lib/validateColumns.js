@@ -8,16 +8,35 @@ const REQUIRED_FIELDS_PART_PROCUREMENT = [
   'V_SHARE_VALUE', 'ORD_METHOD', 'QTY_CONT', 'PACK_QTY_CONT',
 ];
 
-function validateRequiredColumns(rawData, requiredCanonicalFields) {
-  if (!rawData || rawData.length === 0) return { valid: true, missing: [] };
+function validateRequiredColumns(headerRow, requiredCanonicalFields) {
+  if (!headerRow || headerRow.length === 0) return { valid: true, missing: [] };
 
-  const firstRowKeys = new Set(Object.keys(rawData[0]));
+  const headerSet = new Set(headerRow);
   const missing = requiredCanonicalFields.filter((canonicalName) => {
     const aliases = FIELD_ALIASES[canonicalName] || [];
-    return !aliases.some((alias) => firstRowKeys.has(alias));
+    return !aliases.some((alias) => headerSet.has(alias));
   });
 
   return { valid: missing.length === 0, missing };
 }
 
-module.exports = { validateRequiredColumns, REQUIRED_FIELDS_TARGET_RO, REQUIRED_FIELDS_PART_PROCUREMENT };
+function findDuplicateHeaders(headerRow) {
+  if (!headerRow) return [];
+
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const header of headerRow) {
+    if (header === undefined || header === null || header === '') continue;
+    if (seen.has(header)) duplicates.add(header);
+    else seen.add(header);
+  }
+
+  return [...duplicates];
+}
+
+module.exports = {
+  validateRequiredColumns,
+  findDuplicateHeaders,
+  REQUIRED_FIELDS_TARGET_RO,
+  REQUIRED_FIELDS_PART_PROCUREMENT,
+};

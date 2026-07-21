@@ -57,7 +57,7 @@ const Overview = () => {
         <div className="w-full overflow-x-auto pb-2">
           <div className="grid grid-cols-6 gap-3.5 min-w-[900px]">
             {['A', 'W', 'T', 'K', 'R', 'TTAT'].map((shop, i) => (
-              <div key={shop} className="bg-white rounded-[20px] p-4.5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] border border-ink/5 flex flex-col relative overflow-hidden">
+              <div key={shop} className="bg-white rounded-[20px] p-[18px] shadow-[0_2px_10px_rgba(20,20,15,0.04)] border border-ink/5 flex flex-col relative overflow-hidden">
                 <div className="absolute left-0 top-0 bottom-0 w-[5px] bg-ink"></div>
                 <div className="pl-2">
                   <p className="text-muted text-[9px] font-extrabold uppercase tracking-wide mb-1.5">SHOP {shop}</p>
@@ -73,7 +73,7 @@ const Overview = () => {
       <div className="flex flex-col lg:flex-row gap-5">
         {/* Left Column */}
         <div className="flex-[2.4] min-w-0 flex flex-col gap-5">
-          <div className="bg-white rounded-4xl p-6.5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 h-[300px] flex flex-col relative overflow-hidden">
+          <div className="bg-white rounded-4xl p-[26px] shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 h-[300px] flex flex-col relative overflow-hidden">
             <h3 className="font-bold text-sm flex items-center gap-2 mb-5 text-ink"><Sparkle size={8} /> Scanning Trend</h3>
             <div className="flex-1 w-full -ml-4">
               <ResponsiveContainer width="100%" height="100%">
@@ -88,7 +88,7 @@ const Overview = () => {
             </div>
           </div>
 
-          <div className="bg-white rounded-4xl p-6.5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 h-[300px] flex flex-col">
+          <div className="bg-white rounded-4xl p-[26px] shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 h-[300px] flex flex-col">
             <h3 className="font-bold text-sm mb-6 text-ink">Shop Progress by address</h3>
             <div className="flex-1 w-full">
               <ResponsiveContainer width="100%" height="100%">
@@ -103,7 +103,7 @@ const Overview = () => {
             </div>
           </div>
 
-          <div className="bg-white rounded-4xl p-6.5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 mb-5 h-[420px] flex flex-col">
+          <div className="bg-white rounded-4xl p-[26px] shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 mb-5 h-[420px] flex flex-col">
             <div className="flex justify-between items-center mb-4 flex-shrink-0">
               <h3 className="font-bold text-sm text-ink flex items-center gap-1.5">Detail by address <Sparkle size={6} delay="1.2s" /></h3>
               <div className="relative">

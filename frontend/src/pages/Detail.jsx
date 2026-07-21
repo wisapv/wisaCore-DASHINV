@@ -127,7 +127,7 @@ const Detail = () => {
               placeholder="Type KBN, Part No..."
               className="flex-1 border border-ink/10 bg-[#FAFAF7] rounded-xl px-3.5 py-2.5 text-xs outline-none text-ink"
             />
-            <button className="bg-ink text-accent px-5.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap hover:opacity-90 transition-opacity">
+            <button className="bg-ink text-accent px-[22px] py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap hover:opacity-90 transition-opacity">
               Search
             </button>
           </div>

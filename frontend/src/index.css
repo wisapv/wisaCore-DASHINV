@@ -19,3 +19,17 @@ body {
 .animate-sparkle {
   animation: sparkle-pulse 3.2s ease-in-out infinite;
 }
+
+@keyframes item-pop {
+  0% { opacity: 0; transform: scale(.9) translateY(-6px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-item-pop {
+  animation: item-pop .4s ease-out;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}

@@ -5,7 +5,6 @@ import {
   ArrowRight, AlertTriangle, ChevronDown, Pencil, RefreshCw, Users, PackagePlus, Star
 } from 'lucide-react';
 import HandheldManager from './HandheldManager';
-import AssignHandheld from './AssignHandheld';
 import { useActiveBatch, SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
 const DEFAULT_GROUP_PREFIX = 'SR481D';
@@ -99,7 +98,12 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
     try {
       const response = await fetch(`${API_BASE}/api/batches/list`);
       if (response.ok) {
-        const data = await response.json();
+        const raw = await response.json();
+        // Getsudo batches live in the same upload_batches table (so
+        // Assign Handheld's batch-selector dropdown can see them), but
+        // they don't belong in this TBOS-specific history view — see
+        // GetsudoPage.jsx for their own Upload History.
+        const data = raw.filter((b) => !b.batch_id.startsWith('GETSUDO-'));
         setHistoryBatches(data);
         if (batchIdForStatus) {
           const row = data.find((b) => b.batch_id === batchIdForStatus);
@@ -486,9 +490,21 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
             <p className="text-sm text-muted">Upload and manage your inventory data batches.</p>
           </div>
 
-          <div className="flex items-center gap-6 border-b border-ink/10 pb-0">
-            <button onClick={() => setSubTab('new')} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'new' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><Plus size={18} /> New Upload</button>
-            <button onClick={() => { setSubTab('history'); fetchHistory(); }} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'history' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><History size={18} /> Upload History</button>
+          <div className="flex items-center justify-between border-b border-ink/10 pb-0">
+            <div className="flex items-center gap-6">
+              <button onClick={() => setSubTab('new')} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'new' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><Plus size={18} /> New Upload</button>
+              <button onClick={() => { setSubTab('history'); fetchHistory(); }} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'history' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><History size={18} /> Upload History</button>
+            </div>
+
+            <button
+              onClick={() => {
+                if (activeBatchId && !window.confirm('Start a new batch? The current active batch will no longer be active (it stays in Upload History).')) return;
+                startNewBatch().catch(() => alert('Failed to start a new batch.'));
+              }}
+              className="flex items-center gap-2 bg-ink text-accent px-5 py-2.5 rounded-xl font-bold text-sm hover:opacity-90 transition-colors mb-2"
+            >
+              <Plus size={16} /> New Batch
+            </button>
           </div>
 
           {subTab === 'new' && hasLoadedActiveBatch && !activeBatchId && !isViewingHistoricalBatch && (
@@ -800,10 +816,6 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
           subscribeToEvent={subscribeToEvent}
           setActiveModule={setActiveModule}
         />
-      </div>
-
-      <div className={activeTab === 'Assign' ? '' : 'hidden'}>
-        <AssignHandheld currentBatchId={currentBatchId} setUploadTab={setUploadTab} subscribeToEvent={subscribeToEvent} />
       </div>
 
       {isModalOpen && (

@@ -152,6 +152,11 @@ async function initDB() {
     -- this table, only the first matching row is used (see
     -- matchPartNumbersAgainstMaster in getsudoRoute.js) — the data itself
     -- stays untouched either way. Full replace on every upload.
+    -- monthly_forecast / daily_usage: not used anywhere yet (kept for
+    -- future use) — the file's own forecast columns (7 dynamic month
+    -- labels like "Jun-26", plus DMax/D01-D31/N01-N31 daily usage), stored
+    -- as JSON objects since the month labels shift every time the file is
+    -- regenerated and don't map to fixed table columns.
     CREATE TABLE IF NOT EXISTS getsudo_master_parts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       key0 TEXT,
@@ -167,18 +172,22 @@ async function initDB() {
       qty TEXT,
       pc_addr TEXT,
       addr01 TEXT,
+      monthly_forecast TEXT,
+      daily_usage TEXT,
       updated_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_getsudo_part_no ON getsudo_master_parts(part_no);
-    -- Single-row metadata: which month the CURRENTLY loaded master data
-    -- represents (picked by the admin at upload time, not guessed from the
-    -- filename) — lets the UI show "Data for: September 2026" instead of
-    -- just an upload timestamp, since those can drift apart (e.g. October's
-    -- file uploaded a few days late, or uploaded early).
-    CREATE TABLE IF NOT EXISTS getsudo_master_meta (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
+    -- Every NQC upload is kept as its own revision (never deleted) instead
+    -- of replacing the previous one — matching/preview always use the
+    -- MOST RECENT revision (MAX(id)), but older ones stay in the database
+    -- for the upload-history view. row_count is a cached copy of how many
+    -- parts that revision had, so listing history doesn't need to COUNT(*)
+    -- against getsudo_master_parts for every past revision.
+    CREATE TABLE IF NOT EXISTS getsudo_master_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       data_month TEXT,
-      uploaded_at TEXT
+      uploaded_at TEXT,
+      row_count INTEGER
     );
   `);
   // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
@@ -191,6 +200,46 @@ async function initDB() {
   }
   if (!uploadBatchesColumns.some((col) => col.name === 'is_baseline')) {
     await db.exec(`ALTER TABLE upload_batches ADD COLUMN is_baseline INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Same auto-migration approach for getsudo_master_parts — any new column
+  // added here in the future just needs a line added below, never a manual
+  // DROP TABLE. The very first version of this table used key0 as its
+  // PRIMARY KEY, which SQLite can't just un-set via ALTER TABLE — so if
+  // that old shape is still around, rebuild the table properly (copying
+  // whatever rows already exist) instead of asking for one more manual drop.
+  let getsudoPartsColumns = await db.all(`PRAGMA table_info(getsudo_master_parts)`);
+  if (getsudoPartsColumns.length > 0 && !getsudoPartsColumns.some((col) => col.name === 'id')) {
+    await db.exec(`ALTER TABLE getsudo_master_parts RENAME TO getsudo_master_parts_old`);
+    await db.exec(`
+      CREATE TABLE getsudo_master_parts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key0 TEXT, source TEXT, dock TEXT, supplier TEXT, s_plant TEXT, s_dock TEXT,
+        pno TEXT, part_no TEXT, part_name TEXT, kbn TEXT, qty TEXT, pc_addr TEXT, addr01 TEXT,
+        monthly_forecast TEXT, daily_usage TEXT, revision_id INTEGER, updated_at TEXT
+      )
+    `);
+    const oldColNames = (await db.all(`PRAGMA table_info(getsudo_master_parts_old)`)).map((c) => c.name);
+    const carryOverCols = ['key0', 'source', 'dock', 'supplier', 's_plant', 's_dock', 'pno', 'part_no', 'part_name', 'kbn', 'qty', 'pc_addr', 'addr01', 'updated_at']
+      .filter((c) => oldColNames.includes(c));
+    if (carryOverCols.length > 0) {
+      const colList = carryOverCols.join(', ');
+      await db.exec(`INSERT INTO getsudo_master_parts (${colList}) SELECT ${colList} FROM getsudo_master_parts_old`);
+    }
+    await db.exec(`DROP TABLE getsudo_master_parts_old`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_getsudo_part_no ON getsudo_master_parts(part_no)`);
+    getsudoPartsColumns = await db.all(`PRAGMA table_info(getsudo_master_parts)`);
+  }
+  if (getsudoPartsColumns.length > 0) {
+    if (!getsudoPartsColumns.some((col) => col.name === 'revision_id')) {
+      await db.exec(`ALTER TABLE getsudo_master_parts ADD COLUMN revision_id INTEGER`);
+    }
+    if (!getsudoPartsColumns.some((col) => col.name === 'monthly_forecast')) {
+      await db.exec(`ALTER TABLE getsudo_master_parts ADD COLUMN monthly_forecast TEXT`);
+    }
+    if (!getsudoPartsColumns.some((col) => col.name === 'daily_usage')) {
+      await db.exec(`ALTER TABLE getsudo_master_parts ADD COLUMN daily_usage TEXT`);
+    }
   }
 
   console.log("SQLite Database initialized with Batch System.");

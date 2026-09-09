@@ -2,8 +2,45 @@ const express = require('express');
 const { connectDB } = require('../database');
 const { getHandheldResults } = require('../lib/handheldResults');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
+const { getActiveBatchId } = require('../lib/batches');
 
 const router = express.Router();
+
+// GET /api/handheld-assign/my-work-modes — a device can have assignments
+// in the Part Runout active batch AND/OR one or more Getsudo batches at
+// the same time (they're separate batches, never merged) — this tells the
+// Android app which of those actually apply to THIS device, so it can skip
+// the "which one?" screen when only one applies, and show it when both do.
+async function handleGetWorkModes(req, res) {
+  try {
+    const { deviceId } = req.query;
+    if (!deviceId) return res.status(400).json({ error: 'Missing deviceId' });
+
+    const db = await connectDB();
+    const activeBatchId = await getActiveBatchId(db);
+
+    let tbos = null;
+    if (activeBatchId) {
+      const owns = await db.get(
+        'SELECT 1 FROM handheld_assignments WHERE batch_id = ? AND device_id = ? LIMIT 1',
+        [activeBatchId, deviceId]
+      );
+      if (owns) tbos = { batchId: activeBatchId };
+    }
+
+    const getsudoRows = await db.all(
+      `SELECT DISTINCT batch_id FROM handheld_assignments WHERE device_id = ? AND batch_id LIKE 'GETSUDO-%'`,
+      deviceId
+    );
+
+    res.json({
+      tbos,
+      getsudo: getsudoRows.map((r) => ({ batchId: r.batch_id })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load work modes' });
+  }
+}
 
 // Restore state for the web's AssignHandheld page (which group is on which
 // device for this batch) — same "restore on mount" pattern as final-data.
@@ -380,6 +417,7 @@ async function handleLogCheckIn(req, res) {
 }
 
 router.get('/device-assignments', handleGetAssignments);
+router.get('/my-work-modes', handleGetWorkModes);
 router.post('/device-assignments', express.json({ limit: '5mb' }), handleSaveAssignments);
 router.get('/my-jobs', handleGetMyJobs);
 router.get('/job-addresses', handleGetJobAddresses);
@@ -391,6 +429,7 @@ router.post('/checkin', express.json({ limit: '1mb' }), handleLogCheckIn);
 
 module.exports = router;
 module.exports.handleGetAssignments = handleGetAssignments;
+module.exports.handleGetWorkModes = handleGetWorkModes;
 module.exports.handleSaveAssignments = handleSaveAssignments;
 module.exports.handleGetMyJobs = handleGetMyJobs;
 module.exports.handleGetJobAddresses = handleGetJobAddresses;

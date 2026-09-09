@@ -2,11 +2,10 @@ import React from 'react';
 import { Search, Bell, AlertCircle, ChevronDown } from 'lucide-react';
 import Sparkle from './Sparkle';
 
-const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab, templateTab, setTemplateTab, getsudoTab, setGetsudoTab }) => {
+const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab, templateTab, setTemplateTab }) => {
   const dashboardTabs = ['Overview', 'Detail', 'Summary'];
-  const uploadTabs = ['TBOS', 'Handheld', 'Assign'];
+  const uploadTabs = ['TBOS', 'Handheld'];
   const templateTabs = ['FORMAT', 'DEVICE', 'NQC MASTER'];
-  const getsudoTabs = ['Target List', 'Assign'];
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 bg-canvas/90 backdrop-blur-md w-full flex justify-between items-center px-8 h-24 border-b border-ink/[0.06]">
@@ -87,33 +86,13 @@ const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab
             ))}
           </div>
 
-        ) : activeModule === 'getsudo' ? (
-
-          // โชว์ Tabs สำหรับ Getsudo (Target List / Assign)
-          <div className="relative flex items-center bg-white rounded-full p-1.5 shadow-[0_2px_10px_rgba(20,20,15,0.05)] border border-ink/[0.05]">
-            <div
-              className="absolute top-1.5 bottom-1.5 left-1.5 w-[120px] bg-ink rounded-full transition-transform duration-300 ease-in-out"
-              style={{ transform: `translateX(${getsudoTabs.indexOf(getsudoTab) * 100}%)` }}
-            ></div>
-
-            {getsudoTabs.map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setGetsudoTab(tab)}
-                className={`relative z-10 w-[120px] flex-none text-center py-2.5 text-xs font-bold transition-colors duration-300 ${
-                  getsudoTab === tab ? 'text-white' : 'text-muted hover:text-ink'
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-
         ) : (
 
           // หน้าอื่นๆ โชว์เป็นแค่ป้ายชื่อ
           <div className="text-sm font-bold text-ink uppercase tracking-widest bg-white px-8 py-2.5 rounded-full shadow-[0_2px_10px_rgba(20,20,15,0.05)] border border-ink/[0.05]">
              {activeModule === 'home' ? 'Welcome to System' :
+              activeModule === 'getsudo' ? 'Getsudo — Target List' :
+              activeModule === 'assign' ? 'Assign Handheld' :
               activeModule === 'result' ? 'Inventory Result' :
               activeModule === 'send-part-list' ? 'Send Part List' : 'System'}
           </div>

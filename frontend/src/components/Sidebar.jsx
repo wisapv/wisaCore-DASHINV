@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, UploadCloud, LayoutGrid, ClipboardList, DownloadCloud, Search, LogOut } from 'lucide-react';
+import { Home, UploadCloud, LayoutGrid, ClipboardList, DownloadCloud, Search, Smartphone, LogOut } from 'lucide-react';
 import Sparkle from './Sparkle';
 
 const Sidebar = ({ activeModule, setActiveModule }) => {
@@ -48,7 +48,20 @@ const Sidebar = ({ activeModule, setActiveModule }) => {
             <Search size={18} />
           </div>
 
-          {/* 4. Dashboard */}
+          {/* 4. Assign Handheld — standalone, shared by both Upload
+              (TBOS/Part Runout) and Getsudo, so it isn't nested under
+              (and doesn't visually belong to) either one. */}
+          <div
+            onClick={() => setActiveModule('assign')}
+            title="Assign Handheld"
+            className={`w-10 h-10 rounded-2xl cursor-pointer transition-all flex items-center justify-center ${
+              activeModule === 'assign' ? 'bg-ink text-accent shadow-[0_4px_10px_rgba(20,20,15,0.25)]' : 'text-muted hover:text-ink'
+            }`}
+          >
+            <Smartphone size={18} />
+          </div>
+
+          {/* 5. Dashboard */}
           <div
             onClick={() => setActiveModule('dashboard')}
             title="Dashboard"

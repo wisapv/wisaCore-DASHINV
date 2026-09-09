@@ -11,13 +11,21 @@ import NqcMasterManager from './pages/NqcMasterManager'
 import GetsudoPage from './pages/GetsudoPage'
 import AssignHandheld from './pages/AssignHandheld'
 import SendPartList from './pages/SendPartList'
+import { useActiveBatch } from './hooks/useActiveBatch'
 
 function App() {
   const [activeModule, setActiveModule] = useState('home');
   const [activeTab, setActiveTab] = useState('Overview'); // ใช้สำหรับหน้า Dashboard
-  const [uploadTab, setUploadTab] = useState('TBOS');     // ใช้สำหรับหน้า Upload (เพิ่มใหม่)
+  const [uploadTab, setUploadTab] = useState('TBOS');     // ใช้สำหรับหน้า Upload (TBOS / Handheld)
   const [templateTab, setTemplateTab] = useState('FORMAT'); // ใช้สำหรับหน้า Template Management (FORMAT / DEVICE / NQC MASTER)
-  const [getsudoTab, setGetsudoTab] = useState('Target List'); // ใช้สำหรับหน้า Getsudo (Target List / Assign)
+
+  // Own connection for the standalone Assign Handheld module below — kept
+  // separate from ListCreate's own useActiveBatch() instance (which still
+  // drives the TBOS/Handheld tabs) rather than threading batch state all
+  // the way down through ListCreate's props. Two socket connections isn't
+  // ideal, but it's a small, contained trade-off for keeping Assign
+  // Handheld genuinely independent of the Upload module.
+  const { activeBatchId, subscribeToEvent: subscribeToAssignEvents } = useActiveBatch();
 
   // Every module the user has opened at least once. A module is only
   // mounted into the DOM (and stays mounted, hidden via CSS, from then on —
@@ -54,8 +62,6 @@ function App() {
         setUploadTab={setUploadTab}
         templateTab={templateTab}
         setTemplateTab={setTemplateTab}
-        getsudoTab={getsudoTab}
-        setGetsudoTab={setGetsudoTab}
       />
 
       <div className="flex pt-[132px]">
@@ -98,24 +104,33 @@ function App() {
           )}
 
           {/* Getsudo — its own module, separate from the Part Runout
-              (TBOS -> Handheld -> Assign) pipeline above, since it's a
-              genuinely different flow (pick any part number on demand vs.
-              the fixed Part Runout list). "Assign" here re-renders the
-              SAME AssignHandheld component the Part Runout flow uses —
-              not a copy — so every improvement (multi-device sharing,
-              Duplicate, partial send, export) applies to both automatically.
-              No currentBatchId/subscribeToEvent wiring needed here: this
-              entry point always starts with nothing selected and the admin
-              picks a Getsudo batch from AssignHandheld's own "MANAGING
-              BATCH" dropdown. */}
+              (TBOS -> Handheld) pipeline above, since it's a genuinely
+              different flow (pick any part number on demand vs. the fixed
+              Part Runout list). Just the Target List page now — "Assign"
+              moved out to its own standalone sidebar module below, shared
+              by both flows, so it isn't nested under (and doesn't visually
+              belong to) either one. */}
           {visitedModules.has('getsudo') && (
             <div className={activeModule === 'getsudo' ? '' : 'hidden'}>
-              <div className={getsudoTab === 'Target List' ? '' : 'hidden'}>
-                <GetsudoPage />
-              </div>
-              <div className={getsudoTab === 'Assign' ? '' : 'hidden'}>
-                <AssignHandheld currentBatchId={null} setUploadTab={() => {}} subscribeToEvent={undefined} />
-              </div>
+              <GetsudoPage setActiveModule={setActiveModule} />
+            </div>
+          )}
+
+          {/* Assign Handheld — standalone, shared by both Part Runout
+              (Upload) and Getsudo. Neither flow "owns" this page; both just
+              link here when they're ready to distribute work to devices.
+              Defaults to whichever batch is currently active app-wide
+              (same as Upload's own TBOS/Handheld tabs use), but the page's
+              own "MANAGING BATCH" dropdown can switch to any other batch —
+              including any Getsudo session — without affecting what's
+              active elsewhere. */}
+          {visitedModules.has('assign') && (
+            <div className={activeModule === 'assign' ? '' : 'hidden'}>
+              <AssignHandheld
+                currentBatchId={activeBatchId}
+                setUploadTab={(tab) => { setActiveModule('upload'); setUploadTab(tab); }}
+                subscribeToEvent={subscribeToAssignEvents}
+              />
             </div>
           )}
 

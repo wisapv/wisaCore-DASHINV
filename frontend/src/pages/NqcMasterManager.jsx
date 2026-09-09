@@ -1,13 +1,15 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { FileSpreadsheet, CheckCircle2, UploadCloud, Loader2, Eye, X, AlertTriangle, Download, FileDown } from 'lucide-react';
+import { FileSpreadsheet, CheckCircle2, UploadCloud, Loader2, Eye, X, AlertTriangle, History } from 'lucide-react';
 import { API_BASE } from '../hooks/useActiveBatch';
 
 // Refreshed monthly, not per counting session — this is reference/catalog
 // data (which physical part lives where), not a "batch" like TBOS uploads
 // are, so it lives here in Template Manager rather than in the Getsudo
 // counting flow itself. Getsudo's Target List page just reads the status
-// this page sets — it never uploads anything itself. Styled to match
-// Template Manager's own FORMAT upload card (see TemplateManager.jsx).
+// this page sets — it never uploads anything itself. Every upload is kept
+// as its own revision (never deleted) — matching always uses the latest
+// one, but past revisions stay visible below for reference. Styled to
+// match Template Manager's own FORMAT upload card (see TemplateManager.jsx).
 const STALE_AFTER_DAYS = 40;
 
 function currentMonthValue() {
@@ -16,7 +18,7 @@ function currentMonthValue() {
 }
 
 function formatMonth(value) {
-  if (!value) return '';
+  if (!value) return '-';
   const [y, m] = value.split('-');
   return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('th-TH', { month: 'long', year: 'numeric' });
 }
@@ -24,6 +26,7 @@ function formatMonth(value) {
 const NqcMasterManager = () => {
   const fileInputRef = useRef(null);
   const [status, setStatus] = useState({ count: 0, updatedAt: null, dataMonth: null });
+  const [history, setHistory] = useState([]);
   const [dataMonth, setDataMonth] = useState(currentMonthValue());
   const [isUploading, setIsUploading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -40,7 +43,14 @@ const NqcMasterManager = () => {
       .catch((err) => console.error('Failed to load NQC master status', err));
   };
 
-  useEffect(() => { fetchStatus(); }, []);
+  const fetchHistory = () => {
+    fetch(`${API_BASE}/api/getsudo/upload-history`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => setHistory(result && result.data ? result.data : []))
+      .catch((err) => console.error('Failed to load NQC upload history', err));
+  };
+
+  useEffect(() => { fetchStatus(); fetchHistory(); }, []);
 
   const daysSinceUpdate = status.updatedAt
     ? Math.floor((Date.now() - new Date(status.updatedAt).getTime()) / (1000 * 60 * 60 * 24))
@@ -69,6 +79,7 @@ const NqcMasterManager = () => {
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       setSuccess(true);
       fetchStatus();
+      fetchHistory();
       setTimeout(() => setSuccess(false), 3000);
     } catch (err) {
       setError(err.message || 'อัปโหลดไม่สำเร็จ');
@@ -92,11 +103,9 @@ const NqcMasterManager = () => {
     }
   };
 
-  const previewColumns = previewRows.length > 0 ? Object.keys(previewRows[0]) : [];
-
-  const handleDownloadTargetListTemplate = () => {
-    window.location.href = `${API_BASE}/api/getsudo/target-list-template`;
-  };
+  const previewColumns = previewRows.length > 0
+    ? Object.keys(previewRows[0]).filter((c) => c !== 'monthly_forecast' && c !== 'daily_usage' && c !== 'revision_id')
+    : [];
 
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
@@ -105,7 +114,8 @@ const NqcMasterManager = () => {
         <p className="text-sm text-gray-500">ฐานข้อมูล part ทั้งโรงงาน สำหรับ Getsudo — refresh เป็นรอบ (ปกติเดือนละครั้ง)</p>
       </div>
 
-      <div className="bg-white rounded-[32px] border border-gray-100 p-10 max-w-3xl flex flex-col gap-6 shadow-sm">
+      {/* CURRENT STATUS + UPLOAD */}
+      <div className="bg-white rounded-[32px] border border-gray-100 p-10 w-full flex flex-col gap-6 shadow-sm">
 
         <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-100">
           <div className="flex items-center gap-4">
@@ -113,10 +123,12 @@ const NqcMasterManager = () => {
               <FileSpreadsheet size={24} />
             </div>
             <div className="flex flex-col">
-              <h3 className="font-bold text-dark text-lg leading-tight">NQC Master (ทั้งโรงงาน)</h3>
+              <h3 className="font-bold text-dark text-lg leading-tight">
+                {status.count > 0 ? `ข้อมูลเดือน ${formatMonth(status.dataMonth)}` : 'NQC Master (ทั้งโรงงาน)'}
+              </h3>
               <p className="text-sm text-gray-500 mt-1">
                 {status.count > 0
-                  ? `ข้อมูลเดือน ${formatMonth(status.dataMonth)} · ${status.count.toLocaleString()} parts · อัปโหลดเมื่อ ${new Date(status.updatedAt).toLocaleString('th-TH')}`
+                  ? `${status.count.toLocaleString()} parts · อัปโหลดเมื่อ ${new Date(status.updatedAt).toLocaleString('th-TH')}`
                   : 'ยังไม่มีข้อมูล — อัปโหลดไฟล์ NQC ครั้งแรก'}
               </p>
             </div>
@@ -138,7 +150,7 @@ const NqcMasterManager = () => {
               className="flex items-center gap-2 bg-dark text-white px-6 py-3 rounded-xl font-bold hover:bg-primary transition-colors disabled:opacity-50"
             >
               {isUploading ? <Loader2 size={18} className="animate-spin" /> : success ? <CheckCircle2 size={18} className="text-success" /> : <UploadCloud size={18} />}
-              {isUploading ? 'Uploading...' : success ? 'Saved!' : 'Upload / Replace'}
+              {isUploading ? 'Uploading...' : success ? 'Saved!' : 'Upload New Revision'}
             </button>
           </div>
 
@@ -150,7 +162,7 @@ const NqcMasterManager = () => {
         <div className="flex items-center justify-between px-1">
           <div>
             <p className="text-sm font-bold text-dark">เดือนของข้อมูลที่จะอัปโหลด</p>
-            <p className="text-xs text-gray-500 mt-0.5">ระบุก่อนกด Upload — ใช้จำแนกว่าข้อมูลปัจจุบันเป็นของเดือนไหน ไม่ใช่แค่วันที่อัปโหลด</p>
+            <p className="text-xs text-gray-500 mt-0.5">ระบุก่อนกด Upload — แต่ละครั้งที่อัปโหลดจะเก็บเป็นประวัติแยกไว้ ไม่ทับของเดิม</p>
           </div>
           <input
             type="month"
@@ -176,30 +188,41 @@ const NqcMasterManager = () => {
         )}
       </div>
 
-      {/* TARGET LIST TEMPLATE — the blank file admins fill in and re-upload
-          on the Getsudo > Target List page. Kept here (not on the Getsudo
-          page) so every downloadable template in the system lives in one
-          place, same as "Main Format" above. */}
-      <div className="bg-white rounded-[32px] border border-gray-100 p-10 max-w-3xl flex flex-col gap-6 shadow-sm">
-        <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-100">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-orange-50 text-primary rounded-xl flex items-center justify-center">
-              <FileDown size={24} />
-            </div>
-            <div className="flex flex-col">
-              <h3 className="font-bold text-dark text-lg leading-tight">Target List Template</h3>
-              <p className="text-sm text-gray-500 mt-1">ไฟล์เปล่าสำหรับกรอก Part Number แล้วอัปโหลดที่หน้า Getsudo &gt; Target List</p>
-            </div>
+      {/* UPLOAD HISTORY — every past revision, newest first. Nothing is
+          ever deleted on upload, so this always reflects everything
+          that's ever been loaded. */}
+      <div className="bg-white rounded-[32px] border border-gray-100 p-10 w-full shadow-sm">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-10 h-10 bg-gray-50 text-gray-500 rounded-xl flex items-center justify-center">
+            <History size={18} />
           </div>
-
-          <button
-            onClick={handleDownloadTargetListTemplate}
-            className="flex items-center gap-2 bg-white border border-gray-200 text-dark px-6 py-3 rounded-xl font-bold hover:border-primary hover:text-primary transition-colors"
-          >
-            <Download size={18} />
-            Download Template
-          </button>
+          <div>
+            <h3 className="font-bold text-dark text-lg leading-tight">Upload History</h3>
+            <p className="text-sm text-gray-500 mt-0.5">อัปโหลดไปแล้วทั้งหมด {history.length} ครั้ง</p>
+          </div>
         </div>
+
+        {history.length === 0 ? (
+          <p className="text-sm text-gray-400 font-semibold py-6 text-center">ยังไม่เคยอัปโหลด</p>
+        ) : (
+          <div className="flex flex-col divide-y divide-gray-100">
+            {history.map((rev, i) => (
+              <div key={rev.id} className="flex items-center justify-between py-4">
+                <div className="flex items-center gap-3">
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${i === 0 ? 'bg-green-500' : 'bg-gray-300'}`} />
+                  <div>
+                    <p className="text-sm font-bold text-dark">
+                      ข้อมูลเดือน {formatMonth(rev.data_month)}
+                      {i === 0 && <span className="ml-2 text-[10px] font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full align-middle">ล่าสุด · กำลังใช้งาน</span>}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5">{new Date(rev.uploaded_at).toLocaleString('th-TH')}</p>
+                  </div>
+                </div>
+                <p className="text-sm font-bold text-gray-400">{rev.row_count.toLocaleString()} parts</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* PREVIEW MODAL — same layout as Template Manager's format preview */}
@@ -215,7 +238,7 @@ const NqcMasterManager = () => {
 
             <div className="mb-6">
               <h3 className="text-2xl font-bold text-dark mb-2">NQC Master Preview</h3>
-              <p className="text-sm text-gray-500">แสดง 20 แถวแรกของข้อมูล NQC master ที่ใช้งานอยู่ตอนนี้</p>
+              <p className="text-sm text-gray-500">แสดง 20 แถวแรกของข้อมูล NQC master revision ล่าสุด</p>
             </div>
 
             <div className="overflow-auto border border-gray-200 rounded-xl flex-1 bg-white">

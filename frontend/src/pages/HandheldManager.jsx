@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   Database, Loader2, CheckCircle2, MapPin,
-  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw, Send
+  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw, ArrowRight
 } from 'lucide-react';
 import { SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
@@ -484,14 +484,6 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
                       {holdData.length > 100 && (
                         <p className="text-[10px] text-orange-500/80 mt-2">Showing first 100 of {holdData.length}.</p>
                       )}
-                      <div className="flex justify-end mt-4">
-                        <button
-                          onClick={() => setActiveModule && setActiveModule('send-part-list')}
-                          className="flex items-center gap-2 bg-orange-600 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-orange-700 transition-colors shadow-sm"
-                        >
-                          <Send size={14} /> Send Part List
-                        </button>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -500,6 +492,19 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
           )}
         </div>
       )}
+
+      {/* Outside every content card, bottom-right — the final step of the
+          Part Runout pipeline (TBOS -> Handheld -> Assign Handheld). Jumps
+          to the standalone Assign Handheld module, same as TBOS's own
+          "Next" button does for Handheld. */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => setActiveModule && setActiveModule('assign')}
+          className="flex items-center gap-2 bg-ink text-accent px-8 py-3.5 rounded-xl font-bold text-sm shadow-[0_8px_20px_rgba(20,20,15,0.15)] hover:opacity-90 hover:-translate-y-0.5 transition-all"
+        >
+          Run Out Assign <ArrowRight size={16} />
+        </button>
+      </div>
     </div>
   );
 };

@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { FileSpreadsheet, CheckCircle2, UploadCloud, Loader2, Eye, X, Download } from 'lucide-react';
+import { FileSpreadsheet, CheckCircle2, UploadCloud, Loader2, Eye, X, Download, FileDown } from 'lucide-react';
+import { API_BASE } from '../hooks/useActiveBatch';
 
 const TemplateManager = () => {
   const fileInputRef = useRef(null);
@@ -74,6 +75,10 @@ const TemplateManager = () => {
     window.location.href = 'http://localhost:3000/api/template/preview-file';
   };
 
+  const handleDownloadTargetListTemplate = () => {
+    window.location.href = `${API_BASE}/api/getsudo/target-list-template`;
+  };
+
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
       <div className="flex flex-col">
@@ -81,7 +86,7 @@ const TemplateManager = () => {
         <p className="text-sm text-gray-500">Upload and manage Excel formats for report generation.</p>
       </div>
 
-      <div className="bg-white rounded-[32px] border border-gray-100 p-10 max-w-3xl flex flex-col gap-8 shadow-sm">
+      <div className="bg-white rounded-[32px] border border-gray-100 p-10 w-full flex flex-col gap-8 shadow-sm">
         
         <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-100">
           <div className="flex items-center gap-4">
@@ -119,6 +124,31 @@ const TemplateManager = () => {
           </div>
           
           <input type="file" accept=".xls,.xlsx" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+        </div>
+      </div>
+
+      {/* TARGET LIST TEMPLATE — the blank file admins fill in and re-upload
+          on the Getsudo > Target List page. Kept here so every downloadable
+          template in the system lives in one place. */}
+      <div className="bg-white rounded-[32px] border border-gray-100 p-10 w-full flex flex-col gap-8 shadow-sm">
+        <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-100">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-orange-50 text-primary rounded-xl flex items-center justify-center">
+              <FileDown size={24} />
+            </div>
+            <div className="flex flex-col">
+              <h3 className="font-bold text-dark text-lg leading-tight">Target List Template (Getsudo)</h3>
+              <p className="text-sm text-gray-500 mt-1">ไฟล์เปล่าสำหรับกรอก Part Number แล้วอัปโหลดที่หน้า Getsudo &gt; Target List</p>
+            </div>
+          </div>
+
+          <button
+            onClick={handleDownloadTargetListTemplate}
+            className="flex items-center gap-2 bg-white border border-gray-200 text-dark px-6 py-3 rounded-xl font-bold hover:border-primary hover:text-primary transition-colors"
+          >
+            <Download size={18} />
+            Download Template
+          </button>
         </div>
       </div>
 

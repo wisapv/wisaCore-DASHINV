@@ -5,7 +5,7 @@ import Sparkle from './Sparkle';
 const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab, templateTab, setTemplateTab }) => {
   const dashboardTabs = ['Overview', 'Detail', 'Summary'];
   const uploadTabs = ['TBOS', 'Handheld'];
-  const templateTabs = ['FORMAT', 'DEVICE', 'NQC MASTER'];
+  const templateTabs = ['FORMAT', 'DEVICE', 'ZONE', 'NQC MASTER'];
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 bg-canvas/90 backdrop-blur-md w-full flex justify-between items-center px-8 h-24 border-b border-ink/[0.06]">

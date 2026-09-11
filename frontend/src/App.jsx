@@ -7,6 +7,7 @@ import ListCreate from './pages/ListCreate';
 import Home from './pages/Home';
 import TemplateManager from './pages/TemplateManager'
 import HandheldDevices from './pages/HandheldDevices'
+import ZoneManager from './pages/ZoneManager'
 import NqcMasterManager from './pages/NqcMasterManager'
 import GetsudoPage from './pages/GetsudoPage'
 import AssignHandheld from './pages/AssignHandheld'
@@ -26,6 +27,20 @@ function App() {
   // ideal, but it's a small, contained trade-off for keeping Assign
   // Handheld genuinely independent of the Upload module.
   const { activeBatchId, subscribeToEvent: subscribeToAssignEvents } = useActiveBatch();
+
+  // Which specific batch to jump Assign Handheld to when arriving from
+  // somewhere other than the sidebar (e.g. Getsudo's "Getsudo Assign"
+  // button, or a specific batch's own row in its Upload History) — Assign
+  // Handheld's own "MANAGING BATCH" dropdown only lists the app-wide
+  // active batch plus whichever one it's already showing (see its own
+  // comment), so without this a freshly created Getsudo batch that isn't
+  // either of those would have no way to ever be selected. null = no
+  // override, Assign Handheld just defaults to the active batch as before.
+  const [assignBatchRequest, setAssignBatchRequest] = useState(null);
+  const goToAssign = (batchId) => {
+    setAssignBatchRequest(batchId || null);
+    setActiveModule('assign');
+  };
 
   // Every module the user has opened at least once. A module is only
   // mounted into the DOM (and stays mounted, hidden via CSS, from then on —
@@ -97,6 +112,9 @@ function App() {
               <div className={templateTab === 'DEVICE' ? '' : 'hidden'}>
                 <HandheldDevices />
               </div>
+              <div className={templateTab === 'ZONE' ? '' : 'hidden'}>
+                <ZoneManager />
+              </div>
               <div className={templateTab === 'NQC MASTER' ? '' : 'hidden'}>
                 <NqcMasterManager />
               </div>
@@ -112,7 +130,7 @@ function App() {
               belong to) either one. */}
           {visitedModules.has('getsudo') && (
             <div className={activeModule === 'getsudo' ? '' : 'hidden'}>
-              <GetsudoPage setActiveModule={setActiveModule} />
+              <GetsudoPage setActiveModule={setActiveModule} onGoToAssign={goToAssign} />
             </div>
           )}
 
@@ -128,6 +146,7 @@ function App() {
             <div className={activeModule === 'assign' ? '' : 'hidden'}>
               <AssignHandheld
                 currentBatchId={activeBatchId}
+                requestedBatchId={assignBatchRequest}
                 setUploadTab={(tab) => { setActiveModule('upload'); setUploadTab(tab); }}
                 subscribeToEvent={subscribeToAssignEvents}
               />

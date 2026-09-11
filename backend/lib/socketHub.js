@@ -28,6 +28,7 @@ const EVENTS = Object.freeze({
   BATCH_MERGE_UPDATED: 'batch:mergeUpdated',
   HANDHELD_UPDATED: 'handheld:updated',
   HANDHELD_DEVICES_UPDATED: 'handheld:devicesUpdated',
+  ZONE_DEFINITIONS_UPDATED: 'zone:definitionsUpdated',
 });
 
 module.exports = { initSocketHub, getSocketHub, emitEvent, EVENTS };

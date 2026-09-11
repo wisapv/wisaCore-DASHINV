@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
-const { createBatchIfNotExists } = require('../lib/batches');
+const { createBatchIfNotExists, setGetsudoActiveBatch, getGetsudoActiveBatchId } = require('../lib/batches');
 const { saveHandheldResults, getHandheldResults } = require('../lib/handheldResults');
 
 const upload = multer({ storage: multer.memoryStorage() });
@@ -268,7 +268,8 @@ async function saveGetsudoBatch(db, foundRows, requestedCount, notFound, res) {
 
   const finalData = buildFinalDataFromMasterRows(foundRows);
   const batchId = generateGetsudoBatchId();
-  await createBatchIfNotExists(db, batchId); // registers in upload_batches — shows up in /api/batches/list — without touching which batch is "active"
+  await createBatchIfNotExists(db, batchId); // registers in upload_batches — shows up in /api/batches/list — without touching which batch is "active" (TBOS's)
+  await setGetsudoActiveBatch(db, batchId); // ...but does become THE Getsudo-active batch, its own separate flag — see lib/batches.js
   await saveHandheldResults(db, batchId, { finalData, holdData: [], remindData: [] });
 
   const previewRows = foundRows.map((row) => ({
@@ -412,7 +413,60 @@ router.get('/master-preview', handleMasterPreview);
 router.post('/create-batch', express.json({ limit: '2mb' }), handleCreateBatch);
 router.post('/create-batch-from-file', upload.single('file'), handleCreateBatchFromFile);
 router.get('/target-list-template', handleDownloadTemplate);
+// DELETE /api/getsudo/batch/:batchId — removes a Getsudo batch and every
+// row of data tied to it, not just the upload_batches registration that
+// batchRoute.js's generic delete handles (that one only cleans target_ro/
+// part_procurement, which Getsudo never writes to — see the comment on
+// createBatchIfNotExists above). Scoped to GETSUDO- ids only so this can't
+// be pointed at a TBOS batch by mistake (that one goes through
+// batchRoute.js's own delete instead).
+async function handleDeleteBatch(req, res) {
+  try {
+    const { batchId } = req.params;
+    if (!batchId || !batchId.startsWith('GETSUDO-')) {
+      return res.status(400).json({ error: 'Not a Getsudo batch id' });
+    }
+
+    const db = await connectDB();
+    await db.run('BEGIN TRANSACTION');
+    try {
+      await db.run('DELETE FROM upload_batches WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM handheld_results WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM handheld_assignments WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM handheld_stock_counts WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM handheld_free_zone_counts WHERE batch_id = ?', batchId);
+      await db.run('DELETE FROM handheld_checkins WHERE batch_id = ?', batchId);
+      await db.run('COMMIT');
+    } catch (err) {
+      await db.run('ROLLBACK');
+      throw err;
+    }
+
+    res.json({ message: 'Batch deleted' });
+  } catch (error) {
+    console.error('Delete Getsudo batch error:', error);
+    res.status(500).json({ error: 'Failed to delete batch' });
+  }
+}
+
+// GET /api/getsudo/active-batch — mirrors /api/part-list/active-batch/
+// current-batch for TBOS: whichever Getsudo batch was created most
+// recently (see setGetsudoActiveBatch above). Used by the "Getsudo Assign"
+// button so it lands on the right batch automatically, same one-click
+// behavior as TBOS's own "Run Out Assign" — no manual picking needed.
+async function handleGetActiveBatch(req, res) {
+  try {
+    const db = await connectDB();
+    const batchId = await getGetsudoActiveBatchId(db);
+    res.json({ batchId });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch active Getsudo batch' });
+  }
+}
+
 router.get('/batch-history', handleGetBatchHistory);
+router.delete('/batch/:batchId', handleDeleteBatch);
+router.get('/active-batch', handleGetActiveBatch);
 router.get('/batch-preview', handleGetBatchPreview);
 
 module.exports = router;
@@ -424,5 +478,7 @@ module.exports.handleCreateBatch = handleCreateBatch;
 module.exports.handleCreateBatchFromFile = handleCreateBatchFromFile;
 module.exports.handleDownloadTemplate = handleDownloadTemplate;
 module.exports.handleGetBatchHistory = handleGetBatchHistory;
+module.exports.handleDeleteBatch = handleDeleteBatch;
+module.exports.handleGetActiveBatch = handleGetActiveBatch;
 module.exports.handleGetBatchPreview = handleGetBatchPreview;
 module.exports.parseMasterWorkbook = parseMasterWorkbook;

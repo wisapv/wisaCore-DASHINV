@@ -5,24 +5,82 @@ import { API_BASE } from "../hooks/useActiveBatch";
 // Devices are now loaded from the real registry (see deviceList state below)
 // instead of being hardcoded here.
 
-const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
-  // Which batch this page is managing — defaults to the app-wide active
-  // batch (currentBatchId prop), but can be switched to any other batch
-  // (e.g. a Getsudo session) without touching what's "active" elsewhere.
-  const [selectedBatchId, setSelectedBatchId] = useState(currentBatchId || "");
-  const [userPickedBatch, setUserPickedBatch] = useState(false);
+// Persists which batch this page is managing across module switches AND
+// page refreshes — this page is kept mounted (hidden via CSS, see App.jsx)
+// while navigating between modules so plain useState should already
+// survive that on its own, but a manual batch pick is a deliberate choice
+// worth surviving a refresh too, so it's backed by localStorage either way.
+const SELECTED_BATCH_STORAGE_KEY = "wisa:assignHandheld:selectedBatchId";
+
+function readStoredBatchId() {
+  try {
+    return localStorage.getItem(SELECTED_BATCH_STORAGE_KEY) || "";
+  } catch {
+    return ""; // storage blocked (private mode, etc.) — just skip persistence
+  }
+}
+
+function writeStoredBatchId(batchId) {
+  try {
+    if (batchId) localStorage.setItem(SELECTED_BATCH_STORAGE_KEY, batchId);
+  } catch {
+    // storage blocked — nothing to do, selection still works for this session
+  }
+}
+
+const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscribeToEvent }) => {
+  // Which batch this page is managing — a previously-picked batch (stored
+  // below) wins over the app-wide active batch default, so a manual choice
+  // sticks around instead of quietly reverting on the next visit/refresh.
+  const [selectedBatchId, setSelectedBatchId] = useState(() => readStoredBatchId() || currentBatchId || "");
+  const [userPickedBatch, setUserPickedBatch] = useState(() => Boolean(readStoredBatchId()));
   const [batchList, setBatchList] = useState([]);
+
+  // Every place selectedBatchId can change (manual pick, requestedBatchId
+  // from Getsudo, the currentBatchId sync below) funnels through this one
+  // effect so storage never falls out of sync with state.
+  useEffect(() => { writeStoredBatchId(selectedBatchId); }, [selectedBatchId]);
 
   useEffect(() => {
     if (!userPickedBatch && currentBatchId) setSelectedBatchId(currentBatchId);
   }, [currentBatchId, userPickedBatch]);
 
+  // A specific batch requested from elsewhere (see App.jsx's goToAssign —
+  // Getsudo's "Getsudo Assign" button and its per-row "Assign" action both
+  // go through this) always wins over the active-batch default above, so
+  // arriving here always lands on the batch the user actually meant.
   useEffect(() => {
+    if (requestedBatchId) {
+      setSelectedBatchId(requestedBatchId);
+      setUserPickedBatch(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedBatchId]);
+
+  useEffect(() => {
+
     fetch(`${API_BASE}/api/batches/list`)
       .then((res) => (res.ok ? res.json() : []))
       .then((rows) => setBatchList(Array.isArray(rows) ? rows : []))
       .catch((err) => console.error("Failed to load batch list", err));
   }, []);
+
+  // The dropdown used to list EVERY batch ever created (every TBOS run +
+  // every Getsudo session, which has no delete and so only accumulates) —
+  // shrunk down to just the two that are actually relevant here: whichever
+  // batch is the app-wide active one (currentBatchId) and whichever batch
+  // this page currently has open (selectedBatchId, which may be a
+  // different Getsudo batch the user arrived at via its own "Getsudo
+  // Assign" button). Anything else is switched to via that flow, not by
+  // browsing a long list here — EXCEPT when nothing is selected yet
+  // (selectedBatchId empty, e.g. no TBOS batch ever started and this page
+  // wasn't reached via Getsudo Assign): the shrunk-down filter would have
+  // nothing to show at all then, so it falls back to the full list just
+  // for that one bootstrap moment, so there's always something to pick.
+  const visibleBatchOptions = useMemo(() => {
+    if (!selectedBatchId) return batchList;
+    return batchList.filter((b) => b.batch_id === currentBatchId || b.batch_id === selectedBatchId);
+  }, [batchList, currentBatchId, selectedBatchId]);
 
   // Real, per-part data for this batch — the same "Address + PIC matched"
   // result HandheldManager builds in step 2 (upload Part addr.xls), fetched
@@ -96,6 +154,26 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     [deviceList]
   );
 
+  // Free Zone definitions (managed on the "Zone" page — Template > ZONE).
+  // These have no real Address Master row behind them, so they're merged
+  // in below as extra groups alongside the address-derived ones (see
+  // zoneBaseGroups), not mixed into finalHandheldData itself — nothing
+  // else that reads finalHandheldData (Handheld tab preview, unassigned
+  // Excel export) needs to know about them.
+  const [zoneList, setZoneList] = useState([]);
+  const loadZones = () => {
+    fetch(`${API_BASE}/api/zone-definitions`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => setZoneList(result ? result.data : []))
+      .catch((err) => console.error('Failed to load zone definitions', err));
+  };
+  useEffect(() => { loadZones(); }, []);
+  useEffect(() => {
+    if (!subscribeToEvent) return undefined;
+    return subscribeToEvent("zone:definitionsUpdated", loadZones);
+  }, [subscribeToEvent]);
+  const activeZones = useMemo(() => zoneList.filter((z) => z.status === 'active'), [zoneList]);
+
   const loadFinalData = () => {
     if (!selectedBatchId) { setDataStatus("empty"); setFinalHandheldData(null); return; }
     setDataStatus((prev) => (prev === "ready" ? prev : "loading"));
@@ -132,11 +210,17 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscribeToEvent, selectedBatchId]);
 
-  // Every PIC present in the real data, for the filter dropdown.
+  // Every PIC present in the real data, plus every dock used by an active
+  // zone — so filtering to a zone-only dock (e.g. "S1" from S1_S-LANE,
+  // which is a dock no real address row ever produces — see
+  // evaluatePicAndShop, real S1 addresses land under PIC 'ALS') doesn't
+  // just come up empty.
   const picOptions = useMemo(() => {
-    if (!finalHandheldData) return [];
-    return [...new Set(finalHandheldData.map((r) => r.PIC || "Unassigned"))].sort();
-  }, [finalHandheldData]);
+    const fromData = finalHandheldData ? finalHandheldData.map((r) => r.PIC || "Unassigned") : [];
+    const fromZones = activeZones.map((z) => z.dock);
+    return [...new Set([...fromData, ...fromZones])].sort();
+  }, [finalHandheldData, activeZones]);
+
 
   // The real groups to distribute to devices: rows grouped by short address
   // (ShortAddr), scoped to the selected PIC — or across every PIC when
@@ -160,12 +244,26 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     return Array.from(byKey.values()).sort((a, b) => a.code.localeCompare(b.code));
   }, [finalHandheldData, selectedPic]);
 
+  // One group per active Free Zone (see zoneList above) — id format
+  // matches baseGroups ("<pic>::<shortAddr>", here dock::code) so it plugs
+  // into the exact same assignment map, drag/drop handlers and
+  // sendToHandheld payload with no special-casing. count is fixed at 1
+  // (there's no "addresses" to count for a zone — see isZone flag, used
+  // only to skip these from the Handheld-data-derived Excel export).
+  const zoneBaseGroups = useMemo(() => {
+    const scoped = selectedPic === "All" ? activeZones : activeZones.filter((z) => z.dock === selectedPic);
+    return scoped
+      .map((z) => ({ id: `${z.dock}::${z.code}`, code: z.code, pic: z.dock, count: 1, isZone: true }))
+      .sort((a, b) => a.code.localeCompare(b.code));
+  }, [activeZones, selectedPic]);
+
   // Merge in device assignments kept in `assignments` (see above). `devices`
   // is an array now — a group can be shared by more than one device.
   const groups = useMemo(
-    () => baseGroups.map((g) => ({ ...g, devices: assignments[g.id] || [] })),
-    [baseGroups, assignments]
+    () => [...baseGroups, ...zoneBaseGroups].map((g) => ({ ...g, devices: assignments[g.id] || [] })),
+    [baseGroups, zoneBaseGroups, assignments]
   );
+
 
   const totalAddresses = useMemo(() => groups.reduce((sum, g) => sum + g.count, 0), [groups]);
 
@@ -421,7 +519,16 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     );
   }
 
-  if (dataStatus === "empty" || dataStatus === "error") {
+  // A batch with no Part addr.xls processed yet (dataStatus "empty") would
+  // normally short-circuit to the prompt below — but Free Zones don't come
+  // from that upload at all (see zoneBaseGroups above), so skip the prompt
+  // whenever there's at least one active zone, even with no batch selected
+  // yet — the board itself now handles "no batch selected" (see the banner
+  // and disabled actions below) instead of blocking the whole page. A
+  // genuine fetch failure ("error") always still shows the error.
+  if (dataStatus === "empty" && activeZones.length > 0) {
+    // fall through to the main board below
+  } else if (dataStatus === "empty" || dataStatus === "error") {
     return (
       <div className="w-full pb-10 animate-in fade-in">
         <div className="bg-white border-2 border-dashed border-ink/10 rounded-[28px] p-16 flex flex-col items-center justify-center text-center">
@@ -461,12 +568,15 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
           <select
             value={selectedBatchId}
             onChange={(e) => { setSelectedBatchId(e.target.value); setUserPickedBatch(true); }}
-            className="bg-white border border-ink/10 rounded-xl px-3 py-2 text-[11px] font-bold text-ink outline-none shadow-sm max-w-[240px]"
+            className={`bg-white border rounded-xl px-3 py-2 text-[11px] font-bold outline-none shadow-sm max-w-[240px] ${
+              selectedBatchId ? "border-ink/10 text-ink" : "border-accent/60 text-muted animate-pulse"
+            }`}
           >
+            {!selectedBatchId && <option value="">Select a batch…</option>}
             {selectedBatchId && !batchList.some((b) => b.batch_id === selectedBatchId) && (
               <option value={selectedBatchId}>{selectedBatchId}</option>
             )}
-            {batchList.map((b) => (
+            {visibleBatchOptions.map((b) => (
               <option key={b.batch_id} value={b.batch_id}>
                 {b.batch_id.startsWith("GETSUDO") ? `[Getsudo] ${b.batch_id}` : b.batch_id}
                 {b.batch_id === currentBatchId ? " (current)" : ""}
@@ -475,6 +585,21 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
           </select>
         </div>
       </div>
+
+      {/* No batch picked yet (see visibleBatchOptions/select above falling
+          back to the full list for this exact moment) — the board below
+          still renders (so Free Zones are visible/browsable) but nothing
+          can actually be saved without a batch_id (handheld_assignments
+          requires one), so say so plainly instead of letting people drag
+          groups around that silently won't be assignable. */}
+      {!selectedBatchId && (
+        <div className="bg-accent/15 border border-accent/40 rounded-2xl px-5 py-3.5 mb-5 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-ink flex items-center justify-center text-accent text-[13px] font-black flex-shrink-0">!</div>
+          <p className="text-[11.5px] font-bold text-ink">
+            เลือก batch จากมุมขวาบนก่อน ถึงจะ assign และบันทึกได้
+          </p>
+        </div>
+      )}
 
       {/* SUMMARY */}
       <div className="bg-white rounded-[22px] border border-ink/5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] p-5 mb-5">
@@ -592,9 +717,9 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
 
                 <button
                   onClick={assignSelected}
-                  disabled={!targetDevice || selectedIds.length === 0}
+                  disabled={!targetDevice || selectedIds.length === 0 || !selectedBatchId}
                   className={`px-4 rounded-xl text-[10px] font-extrabold whitespace-nowrap transition ${
-                    targetDevice && selectedIds.length > 0
+                    targetDevice && selectedIds.length > 0 && selectedBatchId
                       ? "bg-ink text-accent hover:-translate-y-[1px]"
                       : "bg-[#E7E7E1] text-[#AAA79D] cursor-not-allowed"
                   }`}
@@ -663,7 +788,11 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
                   <span className="text-[#C0BDB4] text-[12px] tracking-[-2px]">⠿</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-[12px] font-extrabold text-ink">{group.code}</p>
-                    {selectedPic === "All" && <p className="text-[9px] text-muted font-semibold truncate">{group.pic}</p>}
+                    {selectedPic === "All" && (
+                      <p className="text-[9px] text-muted font-semibold truncate">
+                        {group.pic}{group.isZone ? " · Zone" : ""}
+                      </p>
+                    )}
                   </div>
 
                   <span className="bg-ink text-white min-w-[32px] h-[24px] px-2 rounded-full flex items-center justify-center text-[9.5px] font-extrabold">
@@ -772,7 +901,7 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
                               <div className="flex-1 min-w-0">
                                 <p className="text-[12px] font-extrabold text-ink">{group.code}</p>
                                 <p className="text-[9.5px] text-muted font-semibold mt-0.5">
-                                  {group.count} addresses{selectedPic === "All" ? ` · ${group.pic}` : ""}
+                                  {group.isZone ? "Free Zone" : `${group.count} addresses`}{selectedPic === "All" ? ` · ${group.pic}` : ""}
                                 </p>
                                 {otherDevices.length > 0 && (
                                   <p className="text-[8.5px] text-ink/50 font-semibold mt-0.5 truncate">
@@ -824,8 +953,8 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
           {assignedAddresses > 0 && (
             <button
               onClick={() => setShowSendConfirm(true)}
-              disabled={isSending}
-              className="group bg-ink text-accent rounded-[16px] px-7 py-3.5 shadow-[0_12px_30px_rgba(20,20,15,0.18)] flex items-center gap-3 text-[11.5px] font-extrabold hover:-translate-y-0.5 hover:shadow-[0_16px_38px_rgba(20,20,15,0.24)] transition-all"
+              disabled={isSending || !selectedBatchId}
+              className="group bg-ink text-accent rounded-[16px] px-7 py-3.5 shadow-[0_12px_30px_rgba(20,20,15,0.18)] flex items-center gap-3 text-[11.5px] font-extrabold hover:-translate-y-0.5 hover:shadow-[0_16px_38px_rgba(20,20,15,0.24)] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
             >
               <span className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

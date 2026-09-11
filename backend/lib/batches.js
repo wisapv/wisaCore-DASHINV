@@ -51,6 +51,30 @@ async function getBaselineBatchId(db) {
   return row ? row.batch_id : null;
 }
 
+// Getsudo's own "active batch" — same single-row-wins pattern as
+// setActiveBatch above, but on the separate is_getsudo_active column, so
+// setting it never touches (or is touched by) TBOS's is_active. Called
+// once per newly created Getsudo batch (see saveGetsudoBatch in
+// getsudoRoute.js), so "the active Getsudo batch" always means "the most
+// recently created one" — mirrors how TBOS's Upload flow keeps exactly
+// one batch active at a time.
+async function setGetsudoActiveBatch(db, batchId) {
+  await db.exec('BEGIN TRANSACTION');
+  try {
+    await db.run('UPDATE upload_batches SET is_getsudo_active = 0');
+    await db.run('UPDATE upload_batches SET is_getsudo_active = 1 WHERE batch_id = ?', batchId);
+    await db.exec('COMMIT');
+  } catch (err) {
+    await db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+async function getGetsudoActiveBatchId(db) {
+  const row = await db.get('SELECT batch_id FROM upload_batches WHERE is_getsudo_active = 1 LIMIT 1');
+  return row ? row.batch_id : null;
+}
+
 // Resolves which batch new-parts detection should compare the current batch
 // against: an explicitly-pinned baseline takes priority regardless of age;
 // otherwise the batch immediately before the current one by creation order
@@ -89,6 +113,8 @@ module.exports = {
   getActiveBatchId,
   setBaselineBatch,
   getBaselineBatchId,
+  setGetsudoActiveBatch,
+  getGetsudoActiveBatchId,
   getPreviousBatchId,
   getPreviousTgRows,
 };

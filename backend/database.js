@@ -69,6 +69,22 @@ async function initDB() {
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    -- Free Zone definitions (S1_S-LANE, WH3_OVERFLOW, ...) — factory-wide
+    -- master list, not tied to any batch, same as handheld_devices. These
+    -- have no real Address Master row behind them (nothing to compute PIC/
+    -- ShortAddr from), so they're just a manually-managed code + dock label.
+    -- AssignHandheld merges active rows from this table into its address-
+    -- derived groups client-side (see AssignHandheld.jsx); assigning one to
+    -- a device still writes into the existing handheld_assignments table
+    -- using this row's code as short_addr, dock as pic — no schema change
+    -- needed there. status='inactive' hides it without losing history.
+    CREATE TABLE IF NOT EXISTS zone_definitions (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      dock TEXT NOT NULL DEFAULT 'FREE',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     -- Which address group (PIC + ShortAddr, from a batch's PIC/Addr-matched
     -- data) is assigned to which physical device. A group CAN have more
     -- than one row (one per device) — multiple devices can share the same
@@ -200,6 +216,13 @@ async function initDB() {
   }
   if (!uploadBatchesColumns.some((col) => col.name === 'is_baseline')) {
     await db.exec(`ALTER TABLE upload_batches ADD COLUMN is_baseline INTEGER NOT NULL DEFAULT 0`);
+  }
+  // Getsudo's own "active batch", independent of is_active above (TBOS's).
+  // Same table, separate flag, so the newest Getsudo batch can be "the one
+  // in focus" for Getsudo's own Assign flow without ever touching what
+  // TBOS considers active — see setGetsudoActiveBatch in lib/batches.js.
+  if (!uploadBatchesColumns.some((col) => col.name === 'is_getsudo_active')) {
+    await db.exec(`ALTER TABLE upload_batches ADD COLUMN is_getsudo_active INTEGER NOT NULL DEFAULT 0`);
   }
 
   // Same auto-migration approach for getsudo_master_parts — any new column

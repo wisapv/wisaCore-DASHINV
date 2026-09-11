@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Download, UploadCloud, Loader2, Search, CheckCircle2, AlertTriangle,
-  FileSpreadsheet, ArrowRight, Plus, History, Eye,
+  FileSpreadsheet, ArrowRight, Plus, History, Eye, Trash2,
 } from 'lucide-react';
 import { API_BASE } from '../hooks/useActiveBatch';
 
@@ -17,7 +17,7 @@ const PREVIEW_COLUMNS = ['Source', 'Dock', 'Sup', 'Splant', 'Sdock', 'PartNo', '
 // button below rather than a generic one, since this page never shows
 // TBOS batches (see ListCreate.jsx's own history, which now excludes
 // Getsudo batches the same way).
-const GetsudoPage = ({ setActiveModule }) => {
+const GetsudoPage = ({ setActiveModule, onGoToAssign }) => {
   const fileInputRef = useRef(null);
   const [subTab, setSubTab] = useState('new'); // 'new' | 'history'
   const [masterStatus, setMasterStatus] = useState(null); // { count, updatedAt, dataMonth } | null
@@ -31,6 +31,24 @@ const GetsudoPage = ({ setActiveModule }) => {
   const [previewBatchId, setPreviewBatchId] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Two-click delete: first click asks the row to confirm ("Sure?"), a
+  // second click on that same row actually deletes — no browser-native
+  // confirm() popup, consistent with the rest of the app's own modals.
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
+  // Getsudo's own "active batch" (most recently created — see
+  // setGetsudoActiveBatch on the backend), independent of TBOS's active
+  // batch. Drives the "Getsudo Assign" button below so it lands on the
+  // right batch with one click, the same as TBOS's own assign flow.
+  const [getsudoActiveBatchId, setGetsudoActiveBatchId] = useState(null);
+  const loadGetsudoActiveBatch = () => {
+    fetch(`${API_BASE}/api/getsudo/active-batch`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => setGetsudoActiveBatchId(result ? result.batchId : null))
+      .catch((err) => console.error('Failed to load active Getsudo batch', err));
+  };
+  useEffect(() => { loadGetsudoActiveBatch(); }, []);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/getsudo/master-status`)
@@ -74,6 +92,7 @@ const GetsudoPage = ({ setActiveModule }) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not create the count list');
       setCreateResult(data);
+      setGetsudoActiveBatchId(data.batchId); // backend just made this the Getsudo-active batch too
     } catch (err) {
       setCreateError(err.message);
     } finally {
@@ -93,6 +112,22 @@ const GetsudoPage = ({ setActiveModule }) => {
       console.error('Failed to load batch preview', err);
     } finally {
       setPreviewLoading(false);
+    }
+  };
+
+  const handleDeleteBatch = async (batchId) => {
+    setDeletingId(batchId);
+    try {
+      const res = await fetch(`${API_BASE}/api/getsudo/batch/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setHistory((prev) => prev.filter((h) => h.batchId !== batchId));
+      if (previewBatchId === batchId) { setPreviewBatchId(null); setPreviewRows([]); }
+      if (getsudoActiveBatchId === batchId) setGetsudoActiveBatchId(null); // deleted batch can no longer be "the" active one
+    } catch (err) {
+      console.error('Failed to delete Getsudo batch', err);
+    } finally {
+      setDeletingId(null);
+      setConfirmDeleteId(null);
     }
   };
 
@@ -307,12 +342,39 @@ const GetsudoPage = ({ setActiveModule }) => {
                       <td className="px-6 py-4 text-muted font-semibold">{new Date(h.uploadDate).toLocaleString()}</td>
                       <td className="px-6 py-4 font-bold text-ink">{h.recordCount.toLocaleString()}</td>
                       <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => handlePreviewBatch(previewBatchId === h.batchId ? null : h.batchId)}
-                          className="inline-flex items-center gap-1.5 bg-accent/15 text-ink px-4 py-2 rounded-lg font-bold text-[11px] hover:bg-accent/25 transition-colors"
-                        >
-                          <Eye size={13} /> {previewBatchId === h.batchId ? 'Hide' : 'Preview'}
-                        </button>
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            onClick={() => handlePreviewBatch(previewBatchId === h.batchId ? null : h.batchId)}
+                            className="inline-flex items-center gap-1.5 bg-accent/15 text-ink px-4 py-2 rounded-lg font-bold text-[11px] hover:bg-accent/25 transition-colors"
+                          >
+                            <Eye size={13} /> {previewBatchId === h.batchId ? 'Hide' : 'Preview'}
+                          </button>
+                          {confirmDeleteId === h.batchId ? (
+                            <>
+                              <button
+                                onClick={() => handleDeleteBatch(h.batchId)}
+                                disabled={deletingId === h.batchId}
+                                className="inline-flex items-center gap-1.5 bg-red-500 text-white px-3 py-2 rounded-lg font-bold text-[11px] hover:bg-red-600 transition-colors disabled:opacity-60"
+                              >
+                                {deletingId === h.batchId ? <Loader2 size={13} className="animate-spin" /> : 'Confirm'}
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="text-[11px] font-bold text-muted hover:text-ink px-1"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => setConfirmDeleteId(h.batchId)}
+                              title="Delete this batch"
+                              className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                     {previewBatchId === h.batchId && (
@@ -339,7 +401,7 @@ const GetsudoPage = ({ setActiveModule }) => {
           "Run Out Assign" button. */}
       <div className="flex justify-end">
         <button
-          onClick={() => setActiveModule && setActiveModule('assign')}
+          onClick={() => (onGoToAssign ? onGoToAssign(getsudoActiveBatchId) : setActiveModule && setActiveModule('assign'))}
           className="flex items-center gap-2 bg-ink text-accent px-8 py-3.5 rounded-xl font-bold text-sm shadow-[0_8px_20px_rgba(20,20,15,0.15)] hover:opacity-90 hover:-translate-y-0.5 transition-all"
         >
           Getsudo Assign <ArrowRight size={16} />

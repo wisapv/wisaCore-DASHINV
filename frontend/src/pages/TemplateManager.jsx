@@ -79,6 +79,10 @@ const TemplateManager = () => {
     window.location.href = `${API_BASE}/api/getsudo/target-list-template`;
   };
 
+  const handleDownloadLtboTemplate = () => {
+    window.location.href = `${API_BASE}/api/process-stock/template`;
+  };
+
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
       <div className="flex flex-col">
@@ -144,6 +148,32 @@ const TemplateManager = () => {
 
           <button
             onClick={handleDownloadTargetListTemplate}
+            className="flex items-center gap-2 bg-white border border-gray-200 text-dark px-6 py-3 rounded-xl font-bold hover:border-primary hover:text-primary transition-colors"
+          >
+            <Download size={18} />
+            Download Template
+          </button>
+        </div>
+      </div>
+
+      {/* LTBO1021 UPLOAD TEMPLATE — the blank file Process Stock's own
+          export step builds its files from (see the RUN OUT / Inventory
+          Sum Export design discussion). Download-only reference, same
+          pattern as the Target List Template above. */}
+      <div className="bg-white rounded-[32px] border border-gray-100 p-10 w-full flex flex-col gap-8 shadow-sm">
+        <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-100">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-orange-50 text-primary rounded-xl flex items-center justify-center">
+              <FileDown size={24} />
+            </div>
+            <div className="flex flex-col">
+              <h3 className="font-bold text-dark text-lg leading-tight">LTBO1021 Upload Template (RUN OUT)</h3>
+              <p className="text-sm text-gray-500 mt-1">Inventory Result data upload/download format — used by Process Stock's Export step in Summary &gt; RUN OUT</p>
+            </div>
+          </div>
+
+          <button
+            onClick={handleDownloadLtboTemplate}
             className="flex items-center gap-2 bg-white border border-gray-200 text-dark px-6 py-3 rounded-xl font-bold hover:border-primary hover:text-primary transition-colors"
           >
             <Download size={18} />

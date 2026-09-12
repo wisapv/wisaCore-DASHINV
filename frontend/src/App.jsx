@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import Overview from './pages/Overview';
-import Detail from './pages/Detail';
+import Detail from './pages/Detail'
+import Summary from './pages/Summary';
 import ListCreate from './pages/ListCreate';
 import Home from './pages/Home';
 import TemplateManager from './pages/TemplateManager'
@@ -156,13 +157,13 @@ function App() {
           {visitedModules.has('dashboard') && (
             <div className={activeModule === 'dashboard' ? '' : 'hidden'}>
               <div className={activeTab === 'Overview' ? '' : 'hidden'}>
-                <Overview />
+                <Overview currentBatchId={activeBatchId} subscribeToEvent={subscribeToAssignEvents} />
               </div>
               <div className={activeTab === 'Detail' ? '' : 'hidden'}>
-                <Detail />
+                <Detail currentBatchId={activeBatchId} subscribeToEvent={subscribeToAssignEvents} onGoToSummary={() => setActiveTab('Summary')} />
               </div>
               <div className={activeTab === 'Summary' ? '' : 'hidden'}>
-                <div className="p-20 text-center text-muted bg-white rounded-4xl shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5">Summary Page</div>
+                <Summary currentBatchId={activeBatchId} subscribeToEvent={subscribeToAssignEvents} />
               </div>
             </div>
           )}

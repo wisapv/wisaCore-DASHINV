@@ -81,7 +81,12 @@ function createFinalRow({ address, picType, finalShop, isLineside = false, ppDoc
         "Q'ty": blankOrTrim(p['QTY /CONT'] || p['QTY /CONT ']),
         Addr: address,
         ShortAddr: shortAddr, // 🔴 นำความยาวใหม่ที่คำนวณได้ไปใช้
-        PIC: picType
+        PIC: picType,
+        // Exposed as its own field (was previously only folded into Group
+        // above) for the Overview page's Local/Import/Inhouse breakdown —
+        // see Overview.jsx. Raw value from Target R/O's own Source column,
+        // untouched — 1=Local, 2 or 4=Import, 3=Inhouse per the business rule.
+        Source: source
     };
 }
 

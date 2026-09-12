@@ -16,6 +16,8 @@ const handheldRoute = require('./handheld_part_list/handheldRoute');
 const templateRoute = require('./part_list/templateRoute');
 const assignAddrRoute = require('./handheld_part_list/assignAddrRoute');
 const deviceRoute = require('./handheld_part_list/deviceRoute');
+const ltboImportRoute = require('./ltbo/ltboImportRoute');
+const processStockRoute = require('./processStock/processStockRoute');
 const zoneDefinitionRoute = require('./handheld_part_list/zoneDefinitionRoute');
 const deviceAssignmentRoute = require('./handheld_part_list/deviceAssignmentRoute');
 const getsudoRoute = require('./getsudo/getsudoRoute');
@@ -41,6 +43,8 @@ app.use('/api/handheld', handheldRoute);
 app.use('/api/handheld-assign', assignAddrRoute);
 app.use('/api/handheld-assign', deviceAssignmentRoute);
 app.use('/api/handheld-devices', deviceRoute);
+app.use('/api/ltbo', ltboImportRoute);
+app.use('/api/process-stock', processStockRoute);
 app.use('/api/zone-definitions', zoneDefinitionRoute);
 app.use('/api/getsudo', getsudoRoute);
 

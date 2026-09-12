@@ -41,21 +41,27 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
   // effect so storage never falls out of sync with state.
   useEffect(() => { writeStoredBatchId(selectedBatchId); }, [selectedBatchId]);
 
-  useEffect(() => {
+  // Adjusting state when a prop changes — done during render (not in an
+  // effect) per React's own guidance, avoiding an extra cascading render.
+  const [lastSeenCurrentBatchId, setLastSeenCurrentBatchId] = useState(currentBatchId);
+  if (currentBatchId !== lastSeenCurrentBatchId) {
+    setLastSeenCurrentBatchId(currentBatchId);
     if (!userPickedBatch && currentBatchId) setSelectedBatchId(currentBatchId);
-  }, [currentBatchId, userPickedBatch]);
+  }
 
   // A specific batch requested from elsewhere (see App.jsx's goToAssign —
   // Getsudo's "Getsudo Assign" button and its per-row "Assign" action both
   // go through this) always wins over the active-batch default above, so
   // arriving here always lands on the batch the user actually meant.
-  useEffect(() => {
+  // Adjusted during render (not in an effect) for the same reason as above.
+  const [lastSeenRequestedBatchId, setLastSeenRequestedBatchId] = useState(requestedBatchId);
+  if (requestedBatchId !== lastSeenRequestedBatchId) {
+    setLastSeenRequestedBatchId(requestedBatchId);
     if (requestedBatchId) {
       setSelectedBatchId(requestedBatchId);
       setUserPickedBatch(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestedBatchId]);
+  }
 
   useEffect(() => {
 

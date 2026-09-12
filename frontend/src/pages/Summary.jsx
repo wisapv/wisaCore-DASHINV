@@ -85,6 +85,7 @@ const RunOutImport = ({ linkedBatchId }) => {
   const [isProcessRunning, setIsProcessRunning] = useState(null); // ltboBatchId currently running, or null
   const [isExporting, setIsExporting] = useState(null); // ltboBatchId currently exporting, or null
   const [exportError, setExportError] = useState('');
+  const [showProblemRows, setShowProblemRows] = useState(false);
 
   const loadImportBatches = () => {
     setIsLoadingBatches(true);
@@ -129,6 +130,14 @@ const RunOutImport = ({ linkedBatchId }) => {
       .catch(() => {})
       .finally(() => setIsPreviewLoading(false));
   };
+
+  // UX: after a successful LTBO upload, automatically open the latest master
+  // preview so the operator can verify data before continuing to Process Stock.
+  useEffect(() => {
+    if (lastResult && importBatches.length > 0 && !previewBatchId) {
+      handlePreview(importBatches[0].batch_id);
+    }
+  }, [lastResult, importBatches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Loads whatever Process Stock last computed for this LTBO batch, if
   // anything — lets someone come back to a batch and see the last run's
@@ -233,16 +242,36 @@ const RunOutImport = ({ linkedBatchId }) => {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <p className="text-sm font-bold text-ink mb-1">Import LTBO1021 List Report</p>
-        <p className="text-[11px] text-muted font-semibold">Upload one or more List Report files (e.g. one per Group/Plant) — they merge into a single master list for this batch.</p>
+
+      {/* RUN OUT workflow header */}
+      <div className="rounded-[24px] bg-[#FAFAF7] border border-ink/[0.06] px-5 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-2xl bg-accent flex items-center justify-center">
+            <Factory size={21} className="text-ink" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <p className="text-xl font-display font-bold text-ink leading-none">RUN OUT</p>
+              <span className="px-2 py-0.5 rounded-full bg-ink text-accent text-[9px] font-extrabold">LTBO1021</span>
+            </div>
+            <p className="text-[11px] text-muted font-semibold mt-1">Inventory Result Workflow</p>
+          </div>
+        </div>
       </div>
 
-      <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-ink/10 rounded-[24px] py-10 cursor-pointer hover:border-accent/50 hover:bg-accent/[0.03] transition-colors">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="w-5 h-5 rounded-full bg-ink text-accent text-[10px] flex items-center justify-center font-bold">1</span>
+          <p className="text-[12px] font-bold text-ink">Upload Master List</p>
+        </div>
+        <p className="text-[11px] text-muted font-semibold">Upload LTBO1021 List Report (.xlsx / .xls). Files will merge into a single master list for this batch.</p>
+      </div>
+
+      <label className="group flex flex-col items-center justify-center gap-3 border-2 border-dashed border-ink/10 rounded-[28px] py-14 cursor-pointer hover:border-accent/70 hover:bg-accent/[0.04] hover:-translate-y-0.5 transition-all">
         <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple className="hidden" onChange={handleFilesChosen} disabled={isUploading} />
-        {isUploading ? <Loader2 size={22} className="animate-spin text-muted" /> : <UploadCloud size={22} className="text-muted" />}
-        <p className="text-[11.5px] font-bold text-ink">{isUploading ? 'Importing…' : 'Click to choose files'}</p>
-        <p className="text-[10px] text-muted font-semibold">.xlsx — multiple files allowed</p>
+        {isUploading ? <Loader2 size={26} className="animate-spin text-muted" /> : <UploadCloud size={26} className="text-muted group-hover:text-ink transition-colors" />}
+        <p className="text-[12px] font-bold text-ink">{isUploading ? 'Importing…' : 'Upload LTBO1021 Excel'}</p>
+        <p className="text-[10px] text-muted font-semibold">Click to choose files • .xlsx / .xls • Multiple files allowed</p>
       </label>
 
       {uploadError && (
@@ -269,8 +298,15 @@ const RunOutImport = ({ linkedBatchId }) => {
         </div>
       )}
 
+      <div className="flex items-center gap-2 mt-2 mb-1">
+        <span className="w-5 h-5 rounded-full bg-ink text-accent text-[10px] flex items-center justify-center font-bold">
+          2
+        </span>
+        <p className="text-[12px] font-bold text-ink">Imported Master Lists</p>
+      </div>
+
       <div>
-        <p className="text-[12px] font-bold text-ink mb-3">Previous imports for this batch</p>
+        <p className="text-[11px] text-muted font-semibold mb-3">LTBO1021 batches ready for preview, processing, and export.</p>
         <div className="bg-white rounded-[24px] border border-ink/[0.06] overflow-hidden">
           {isLoadingBatches ? (
             <div className="py-14 flex items-center justify-center text-muted"><Loader2 size={20} className="animate-spin" /></div>
@@ -280,11 +316,12 @@ const RunOutImport = ({ linkedBatchId }) => {
             <table className="w-full text-left text-[12px] table-fixed">
               <thead className="bg-[#FAFAF7]">
                 <tr className="text-muted uppercase text-[10px]">
-                  <th className="px-5 py-3.5 font-bold w-[38%]">Import Batch</th>
+                  <th className="px-5 py-3.5 font-bold w-[34%]">Import Batch</th>
                   <th className="px-5 py-3.5 font-bold w-[10%]">Files</th>
                   <th className="px-5 py-3.5 font-bold w-[12%]">Rows</th>
-                  <th className="px-5 py-3.5 font-bold w-[22%]">Imported</th>
-                  <th className="px-5 py-3.5 font-bold text-right w-[18%]">Actions</th>
+                  <th className="px-5 py-3.5 font-bold w-[18%]">Imported</th>
+                  <th className="px-5 py-3.5 font-bold w-[12%]">Status</th>
+                  <th className="px-5 py-3.5 font-bold text-right w-[24%]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink/5">
@@ -296,12 +333,15 @@ const RunOutImport = ({ linkedBatchId }) => {
                     <td className="px-5 py-3.5 text-muted font-semibold">{b.file_count}</td>
                     <td className="px-5 py-3.5 font-bold text-ink">{b.row_count.toLocaleString()}</td>
                     <td className="px-5 py-3.5 text-muted font-semibold">{new Date(b.uploaded_at).toLocaleString()}</td>
+                    <td className="px-5 py-3.5">
+                      <span className="inline-flex items-center px-2 py-1 rounded-full bg-accent/20 text-ink text-[9.5px] font-extrabold">IMPORTED</span>
+                    </td>
                     <td className="px-5 py-3.5 text-right">
                       <div className="inline-flex items-center gap-2">
                         <button
                           onClick={() => handleToggleProcessing(b.batch_id)}
-                          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold text-[10.5px] transition-colors ${
-                            processingBatchId === b.batch_id ? 'bg-ink text-accent' : 'bg-ink/[0.08] text-ink hover:bg-ink/[0.14]'
+                          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold text-[10.5px] transition-all ${
+                            processingBatchId === b.batch_id ? 'bg-ink text-accent shadow-sm' : 'bg-ink text-accent hover:opacity-90'
                           }`}
                         >
                           <PlayCircle size={12} /> Process Stock
@@ -353,12 +393,16 @@ const RunOutImport = ({ linkedBatchId }) => {
             breathe at full width instead of being squeezed into a cell. */}
         {previewBatchId && (
           <div className="mt-4 bg-ink rounded-[24px] overflow-hidden shadow-[0_8px_24px_rgba(20,20,15,0.12)]">
-            <div className="flex items-center gap-2.5 px-6 py-4 border-b border-white/10">
-              <Layers size={15} className="text-accent" />
-              <p className="text-[12px] font-bold text-white">Master data preview</p>
-              <span className="font-mono text-[10.5px] text-white/50">{previewBatchId}</span>
-              <span className="ml-auto flex items-center gap-1.5 text-[9.5px] font-bold text-accent/80">
-                <span className="w-2 h-2 rounded-sm bg-accent/30"></span> Inventory Result
+            <div className="flex items-center gap-3 px-6 py-4 border-b border-white/10">
+              <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center">
+                <Layers size={15} className="text-ink" />
+              </div>
+              <div>
+                <p className="text-[12px] font-bold text-white">Master Data Preview</p>
+                <p className="font-mono text-[10px] text-white/50">{previewBatchId}</p>
+              </div>
+              <span className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent/15 text-[9.5px] font-bold text-accent">
+                <span className="w-2 h-2 rounded-sm bg-accent"></span> Inventory Result
               </span>
             </div>
             <div className="overflow-auto max-h-[460px] bg-white">
@@ -371,9 +415,9 @@ const RunOutImport = ({ linkedBatchId }) => {
                       {LTBO_COLUMNS.map((col) => (
                         <th
                           key={col.key}
-                          className={`px-3.5 py-3 font-extrabold uppercase text-[9px] tracking-wide sticky top-0 z-10 ${
+                          className={`px-3 py-3 font-extrabold uppercase text-[9px] tracking-wide sticky top-0 z-10 ${
                             col.sticky
-                              ? 'sticky left-0 z-20 bg-ink text-accent border-r-2 border-accent/40'
+                              ? 'sticky left-0 z-20 bg-ink text-accent border-r-2 border-accent/40 shadow-[4px_0_10px_rgba(20,20,15,0.12)]'
                               : col.highlight
                                 ? 'bg-accent/25 text-ink'
                                 : 'bg-[#F3F2EA] text-ink/60'
@@ -392,7 +436,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                             key={col.key}
                             className={`px-3.5 py-2.5 ${
                               col.sticky
-                                ? 'sticky left-0 z-[5] font-extrabold text-ink bg-white border-r-2 border-accent/20'
+                                ? 'sticky left-0 z-[5] font-extrabold text-ink bg-white border-r-2 border-accent/20 shadow-[4px_0_10px_rgba(20,20,15,0.08)]'
                                 : col.highlight
                                   ? 'bg-accent/[0.08] font-bold text-ink'
                                   : 'text-[#5C5A52]'
@@ -410,20 +454,35 @@ const RunOutImport = ({ linkedBatchId }) => {
           </div>
         )}
 
+        {previewBatchId && previewRows.length > 0 && !processingBatchId && (
+          <div className="mt-4 flex justify-end">
+            <button
+              onClick={() => handleToggleProcessing(previewBatchId)}
+              className="inline-flex items-center gap-2 bg-ink text-accent px-5 py-3 rounded-xl text-[11px] font-extrabold shadow-sm hover:opacity-90 transition-opacity"
+            >
+              <PlayCircle size={13} /> Proceed Process Stock
+            </button>
+          </div>
+        )}
+
         {/* Process Stock panel — separate from the LTBO preview above since
             they answer different questions (what's in the master list vs
             what counting actually produced against it) and can both be
             open at once. */}
         {processingBatchId && (
-          <div className="mt-4 bg-white rounded-[24px] border-2 border-ink overflow-hidden">
-            <div className="flex items-center gap-2.5 px-6 py-4 bg-ink">
-              <PlayCircle size={15} className="text-accent" />
-              <p className="text-[12px] font-bold text-white">Process Stock</p>
-              <span className="font-mono text-[10.5px] text-white/50">{processingBatchId}</span>
+          <div className="mt-5 overflow-hidden rounded-[28px] border border-ink/10 bg-white shadow-[0_10px_30px_rgba(20,20,15,0.06)]">
+            <div className="flex items-center gap-3 px-6 py-4 bg-[#11110E] border-b border-white/5">
+              <div className="w-8 h-8 rounded-xl bg-accent/15 border border-accent/20 flex items-center justify-center shrink-0">
+                <PlayCircle size={15} className="text-accent" />
+              </div>
+              <div className="flex flex-col min-w-0">
+                <p className="text-[12.5px] font-bold text-white leading-none">Process Stock</p>
+                <span className="font-mono text-[10px] text-white/45 truncate mt-1">{processingBatchId}</span>
+              </div>
               <button
                 onClick={() => handleRunProcessStock(processingBatchId)}
                 disabled={isProcessRunning === processingBatchId}
-                className="ml-auto flex items-center gap-1.5 bg-accent text-ink px-4 py-2 rounded-lg text-[10.5px] font-extrabold hover:opacity-90 transition-opacity disabled:opacity-60"
+                className="ml-auto flex items-center gap-1.5 bg-accent text-ink px-4 py-2 rounded-xl text-[10.5px] font-extrabold hover:opacity-90 transition-opacity disabled:opacity-60 shadow-sm"
               >
                 {isProcessRunning === processingBatchId ? <Loader2 size={12} className="animate-spin" /> : <PlayCircle size={12} />}
                 {isProcessRunning === processingBatchId ? 'Running…' : (processResults[processingBatchId] ? 'Re-run' : 'Run Process Stock')}
@@ -431,11 +490,13 @@ const RunOutImport = ({ linkedBatchId }) => {
             </div>
 
             {!processResults[processingBatchId] ? (
-              <p className="text-[12px] text-muted font-semibold text-center py-14">
-                Not run yet — click "Run Process Stock" to match counted quantities against this master list.
-              </p>
+              <div className="px-6 py-14 text-center bg-[#FCFCFA]">
+                <p className="text-[12px] text-muted font-semibold">
+                  Not run yet — click "Run Process Stock" to match counted quantities against this master list.
+                </p>
+              </div>
             ) : processResults[processingBatchId].error ? (
-              <div className="flex items-center gap-2.5 px-6 py-5 text-red-600">
+              <div className="mx-5 my-5 flex items-center gap-2.5 rounded-2xl border border-red-100 bg-red-50 px-4 py-4 text-red-600">
                 <AlertTriangle size={15} /> <p className="text-[12px] font-semibold">{processResults[processingBatchId].error}</p>
               </div>
             ) : (
@@ -448,7 +509,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                 const rows = processResults[processingBatchId].rows || [];
                 return (
               <>
-                <div className={`flex items-center gap-3 px-6 py-4 ${summary.blocked ? 'bg-red-50' : 'bg-accent/10'}`}>
+                <div className={`mx-5 mt-5 flex items-center gap-3 rounded-2xl border px-5 py-4 ${summary.blocked ? 'border-red-100 bg-red-50/90' : 'border-accent/20 bg-accent/[0.10]'}`}>
                   {summary.blocked ? (
                     <XCircle size={18} className="text-red-500 shrink-0" />
                   ) : (
@@ -457,9 +518,17 @@ const RunOutImport = ({ linkedBatchId }) => {
                   <p className="text-[12.5px] font-bold text-ink">
                     {summary.matchedCount} / {summary.totalParts} parts matched
                     {summary.blocked && (
-                      <span className="text-red-600"> — {summary.notFoundCount} part(s) not counted yet. Export is blocked until every part is found.</span>
+                      <span className="text-red-600"> — {summary.notFoundCount} part(s) require attention.</span>
                     )}
                   </p>
+                  {summary.blocked && (
+                    <button
+                      onClick={() => setShowProblemRows((v) => !v)}
+                      className="ml-auto flex items-center gap-1.5 bg-red-100 text-red-700 px-4 py-2 rounded-xl text-[10.5px] font-extrabold hover:bg-red-200 transition-colors shrink-0"
+                    >
+                      {showProblemRows ? 'Hide Problem Parts' : `View ${summary.notFoundCount} Problem Parts`}
+                    </button>
+                  )}
                   {!summary.blocked && (
                     <button
                       onClick={() => handleExport(processingBatchId)}
@@ -472,12 +541,13 @@ const RunOutImport = ({ linkedBatchId }) => {
                   )}
                 </div>
                 {exportError && (
-                  <div className="flex items-center gap-2.5 px-6 py-3 bg-red-50 text-red-600">
+                  <div className="mx-5 mt-3 flex items-center gap-2.5 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-red-600">
                     <AlertTriangle size={13} /> <p className="text-[11px] font-semibold">{exportError}</p>
                   </div>
                 )}
 
-                <div className="overflow-auto max-h-[420px]">
+                {(!summary.blocked || showProblemRows) && (
+                <div className="mt-4 overflow-auto max-h-[420px] border-t border-ink/5 bg-white">
                   <table className="w-full text-left text-[10.5px] whitespace-nowrap">
                     <thead className="bg-[#FAFAF7] sticky top-0">
                       <tr className="text-muted uppercase text-[9px]">
@@ -493,7 +563,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                     </thead>
                     <tbody className="divide-y divide-ink/5">
                       {rows.map((r, i) => (
-                        <tr key={i} className={r.status === 'not_found' ? 'bg-red-50/50' : 'hover:bg-accent/[0.05]'}>
+                        <tr key={i} className={r.status === 'not_found' ? 'bg-red-50/40 hover:bg-red-50/70' : 'hover:bg-accent/[0.05]'}>
                           <td className="px-4 py-2.5 font-mono font-bold text-ink">{r.part_no}</td>
                           <td className="px-4 py-2.5">
                             <span className={`text-[9.5px] font-extrabold px-2 py-0.5 rounded-full ${
@@ -516,6 +586,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                     </tbody>
                   </table>
                 </div>
+                )}
               </>
                 );
               })()
@@ -610,7 +681,9 @@ const Summary = ({ currentBatchId }) => {
         )}
 
         {operation === 'RUN OUT' ? (
-          <RunOutImport linkedBatchId={selectedBatchId} />
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <RunOutImport linkedBatchId={selectedBatchId} />
+          </div>
         ) : (
           <div className="flex flex-col items-center text-center gap-3 py-10">
             <div className="w-14 h-14 rounded-2xl bg-accent/20 flex items-center justify-center text-ink">

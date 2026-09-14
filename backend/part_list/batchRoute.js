@@ -14,6 +14,7 @@ async function handleListBatches(req, res) {
         (SELECT COUNT(*) FROM target_ro WHERE batch_id = b.batch_id) as tg_count,
         (SELECT COUNT(*) FROM part_procurement WHERE batch_id = b.batch_id) as pp_count
       FROM upload_batches b
+      WHERE b.batch_id NOT LIKE 'LTBO-%'
       ORDER BY b.upload_date DESC
     `);
 

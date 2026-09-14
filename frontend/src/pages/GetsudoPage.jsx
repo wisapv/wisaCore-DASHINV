@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Download, UploadCloud, Loader2, Search, CheckCircle2, AlertTriangle,
-  FileSpreadsheet, ArrowRight, Plus, History, Eye, Trash2,
+  FileSpreadsheet, ArrowRight, Plus, History, Eye, Trash2, Star,
 } from 'lucide-react';
 import { API_BASE } from '../hooks/useActiveBatch';
 
@@ -37,11 +37,14 @@ const GetsudoPage = ({ setActiveModule, onGoToAssign }) => {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
-  // Getsudo's own "active batch" (most recently created — see
-  // setGetsudoActiveBatch on the backend), independent of TBOS's active
+  // Getsudo's own "active batch" — auto-set to whichever was created most
+  // recently (see setGetsudoActiveBatch on the backend), but can now also
+  // be manually re-pinned to an older one below (handleSetActive), same
+  // idea as TBOS's own "Set as Baseline". Independent of TBOS's active
   // batch. Drives the "Getsudo Assign" button below so it lands on the
   // right batch with one click, the same as TBOS's own assign flow.
   const [getsudoActiveBatchId, setGetsudoActiveBatchId] = useState(null);
+  const [settingActiveId, setSettingActiveId] = useState(null);
   const loadGetsudoActiveBatch = () => {
     fetch(`${API_BASE}/api/getsudo/active-batch`)
       .then((res) => (res.ok ? res.json() : null))
@@ -49,6 +52,23 @@ const GetsudoPage = ({ setActiveModule, onGoToAssign }) => {
       .catch((err) => console.error('Failed to load active Getsudo batch', err));
   };
   useEffect(() => { loadGetsudoActiveBatch(); }, []);
+
+  const handleSetActive = async (batchId) => {
+    setSettingActiveId(batchId);
+    try {
+      const res = await fetch(`${API_BASE}/api/getsudo/set-active-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchId }),
+      });
+      if (!res.ok) throw new Error('Failed to set active batch');
+      setGetsudoActiveBatchId(batchId);
+    } catch (err) {
+      console.error('Failed to set active Getsudo batch', err);
+    } finally {
+      setSettingActiveId(null);
+    }
+  };
 
   useEffect(() => {
     fetch(`${API_BASE}/api/getsudo/master-status`)
@@ -331,6 +351,7 @@ const GetsudoPage = ({ setActiveModule, onGoToAssign }) => {
                   <th className="px-6 py-4 font-bold">Batch ID</th>
                   <th className="px-6 py-4 font-bold">Upload Date</th>
                   <th className="px-6 py-4 font-bold">Records</th>
+                  <th className="px-6 py-4 font-bold text-center">Active</th>
                   <th className="px-6 py-4 font-bold text-right">Actions</th>
                 </tr>
               </thead>
@@ -341,6 +362,22 @@ const GetsudoPage = ({ setActiveModule, onGoToAssign }) => {
                       <td className="px-6 py-4 font-mono font-bold text-ink">{h.batchId}</td>
                       <td className="px-6 py-4 text-muted font-semibold">{new Date(h.uploadDate).toLocaleString()}</td>
                       <td className="px-6 py-4 font-bold text-ink">{h.recordCount.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-center">
+                        {h.batchId === getsudoActiveBatchId ? (
+                          <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg font-bold text-xs shadow-sm">
+                            <Star size={12} className="fill-amber-700" /> Active
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleSetActive(h.batchId)}
+                            disabled={settingActiveId === h.batchId}
+                            className="inline-flex items-center gap-1.5 text-ink/60 font-bold bg-ink/5 px-3 py-1.5 rounded-lg text-xs hover:bg-ink hover:text-accent transition-colors shadow-sm disabled:opacity-60"
+                          >
+                            {settingActiveId === h.batchId ? <Loader2 size={12} className="animate-spin" /> : null}
+                            Set as Active
+                          </button>
+                        )}
+                      </td>
                       <td className="px-6 py-4 text-right">
                         <div className="inline-flex items-center gap-2">
                           <button
@@ -379,7 +416,7 @@ const GetsudoPage = ({ setActiveModule, onGoToAssign }) => {
                     </tr>
                     {previewBatchId === h.batchId && (
                       <tr>
-                        <td colSpan={4} className="px-6 py-4 bg-[#FAFAF7]">
+                        <td colSpan={5} className="px-6 py-4 bg-[#FAFAF7]">
                           {previewLoading ? (
                             <div className="py-6 flex justify-center text-muted"><Loader2 size={18} className="animate-spin" /></div>
                           ) : (

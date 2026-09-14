@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, ChevronDown, Loader2, Pencil, X } from 'lucide-react';
+import { Search, ChevronDown, Loader2, Pencil, X, Download } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import Sparkle from '../components/Sparkle';
 import { API_BASE } from '../hooks/useActiveBatch';
 
@@ -246,6 +247,35 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
   const visibleFreeRows = filteredFreeRows.slice(0, ROWS_LIMIT);
   const hiddenFreeCount = filteredFreeRows.length - visibleFreeRows.length;
 
+  // Exports whichever view is currently open (Fix/Free), using the FULL
+  // filtered set (filteredRows/filteredFreeRows) rather than the 150-row
+  // visibleRows/visibleFreeRows slice — that slice only exists to keep the
+  // on-screen table fast, the export shouldn't silently drop rows past it.
+  // Column order/labels mirror each table's own <thead> above exactly.
+  const handleExportExcel = () => {
+    const isFree = view === 'Free';
+    const sourceRows = isFree ? filteredFreeRows : filteredRows;
+    if (sourceRows.length === 0) return;
+
+    const exportRows = isFree
+      ? sourceRows.map((r) => ({
+          Zone: r.zone, Dock: r.dock, 'Part No': r.partNo, 'Part Name': r.partName || '',
+          KBN: r.kbn, Qty: r.qty ?? '', Address: r.address, 'Total Box': r.totalBoxes ?? '',
+          'In List?': r.inBatchList ? 'In list' : 'Not in list',
+        }))
+      : sourceRows.map((r) => ({
+          Shop: r.shop, Dock: r.dock, 'Part No': r.partNo, 'Part Name': r.partName,
+          KBN: r.kbn, Address: r.address, Qty: r.qty ?? '', Box: r.box || '', Pcs: r.pcs || '',
+          Seq: r.seq || '', Order: r.order || 'N/A', 'Sum Stock': r.sumStock || 0, Status: r.status,
+        }));
+
+    const worksheet = XLSX.utils.json_to_sheet(exportRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, `${view} Zone`);
+    const safeBatchId = (selectedBatchId || 'batch').replace(/[^a-zA-Z0-9_-]/g, '_');
+    XLSX.writeFile(workbook, `${safeBatchId}_${view}Zone_Detail.xlsx`);
+  };
+
   const selectClass = 'border border-ink/10 bg-[#FAFAF7] rounded-xl px-3 py-2.5 text-[11.5px] font-semibold text-ink outline-none appearance-none cursor-pointer';
 
   // "Go to Summary" — always checks completion first (see the hand-drawn
@@ -307,18 +337,37 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
       </div>
 
       {selectedBatchId && (
-        <div className="flex items-center gap-1 border-b border-ink/10 -mb-1">
-          {['Fix', 'Free'].map((v) => (
+        <div className="flex items-center justify-between gap-3 border-b border-ink/10 -mb-1">
+          <div className="flex items-center gap-1">
+            {['Fix', 'Free'].map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`flex items-center gap-2 px-4 py-3 font-bold text-sm transition-all border-b-2 ${
+                  view === v ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'
+                }`}
+              >
+                {v} Zone
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mb-2">
             <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`flex items-center gap-2 px-4 py-3 font-bold text-sm transition-all border-b-2 ${
-                view === v ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'
-              }`}
+              onClick={handleExportExcel}
+              disabled={(view === 'Free' ? filteredFreeRows.length : filteredRows.length) === 0}
+              className="flex items-center gap-1.5 bg-ink text-accent px-4 py-2 rounded-lg text-[11px] font-extrabold hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {v} Zone
+              <Download size={13} /> Export Excel
             </button>
-          ))}
+            <button
+              onClick={goToSummary}
+              disabled={isCheckingSummary}
+              className="flex items-center gap-1.5 bg-ink text-accent px-4 py-2 rounded-lg text-[11px] font-extrabold hover:opacity-90 transition-opacity disabled:opacity-60"
+            >
+              {isCheckingSummary && <Loader2 size={13} className="animate-spin" />}
+              {isCheckingSummary ? 'Checking…' : 'Go to Summary'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -588,19 +637,6 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
             )}
           </div>
         </>
-      )}
-
-      {selectedBatchId && (
-        <div className="flex justify-end mt-2">
-          <button
-            onClick={goToSummary}
-            disabled={isCheckingSummary}
-            className="flex items-center gap-2 bg-ink text-accent px-8 py-3.5 rounded-xl font-bold text-sm shadow-[0_8px_20px_rgba(20,20,15,0.15)] hover:opacity-90 hover:-translate-y-0.5 transition-all disabled:opacity-60"
-          >
-            {isCheckingSummary && <Loader2 size={16} className="animate-spin" />}
-            {isCheckingSummary ? 'Checking…' : 'Go to Summary'}
-          </button>
-        </div>
       )}
 
       {summaryWarning && (

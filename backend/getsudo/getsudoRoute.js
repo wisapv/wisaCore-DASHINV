@@ -450,10 +450,11 @@ async function handleDeleteBatch(req, res) {
 }
 
 // GET /api/getsudo/active-batch — mirrors /api/part-list/active-batch/
-// current-batch for TBOS: whichever Getsudo batch was created most
-// recently (see setGetsudoActiveBatch above). Used by the "Getsudo Assign"
-// button so it lands on the right batch automatically, same one-click
-// behavior as TBOS's own "Run Out Assign" — no manual picking needed.
+// current-batch for TBOS: whichever Getsudo batch is currently pinned as
+// active — auto-set to the most recently created one (see
+// setGetsudoActiveBatch above), or manually re-pinned via set-active-batch
+// below. Used by the "Getsudo Assign" button so it lands on the right
+// batch automatically, same as TBOS's own "Run Out Assign".
 async function handleGetActiveBatch(req, res) {
   try {
     const db = await connectDB();
@@ -464,9 +465,33 @@ async function handleGetActiveBatch(req, res) {
   }
 }
 
+// POST /api/getsudo/set-active-batch — manual pin, mirrors TBOS's own
+// POST /api/part-list/set-baseline-batch. Until now "the Getsudo-active
+// batch" was always whichever one was created most recently (see
+// saveGetsudoBatch above) — this lets someone explicitly pick a different
+// one instead, e.g. after a page refresh landed them on a newer batch they
+// didn't actually want "Getsudo Assign" to use.
+async function handleSetActiveBatch(req, res) {
+  try {
+    const { batchId } = req.body;
+    if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+    if (!batchId.startsWith('GETSUDO-')) return res.status(400).json({ error: 'Not a Getsudo batch id' });
+
+    const db = await connectDB();
+    const batch = await db.get('SELECT batch_id FROM upload_batches WHERE batch_id = ?', batchId);
+    if (!batch) return res.status(404).json({ error: 'Batch not found' });
+
+    await setGetsudoActiveBatch(db, batchId);
+    res.json({ batchId });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to set active Getsudo batch' });
+  }
+}
+
 router.get('/batch-history', handleGetBatchHistory);
 router.delete('/batch/:batchId', handleDeleteBatch);
 router.get('/active-batch', handleGetActiveBatch);
+router.post('/set-active-batch', handleSetActiveBatch);
 router.get('/batch-preview', handleGetBatchPreview);
 
 module.exports = router;
@@ -480,5 +505,6 @@ module.exports.handleDownloadTemplate = handleDownloadTemplate;
 module.exports.handleGetBatchHistory = handleGetBatchHistory;
 module.exports.handleDeleteBatch = handleDeleteBatch;
 module.exports.handleGetActiveBatch = handleGetActiveBatch;
+module.exports.handleSetActiveBatch = handleSetActiveBatch;
 module.exports.handleGetBatchPreview = handleGetBatchPreview;
 module.exports.parseMasterWorkbook = parseMasterWorkbook;

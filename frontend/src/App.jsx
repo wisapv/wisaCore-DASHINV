@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import Overview from './pages/Overview';
@@ -15,11 +15,29 @@ import AssignHandheld from './pages/AssignHandheld'
 import SendPartList from './pages/SendPartList'
 import { useActiveBatch } from './hooks/useActiveBatch'
 
+// Persists which page/tab is open across a browser refresh — same
+// localStorage pattern the batch selectors elsewhere already use (see
+// SELECTED_BATCH_STORAGE_KEY in Summary.jsx/AssignHandheld.jsx). Without
+// this, a refresh always dropped the user back to Home because these were
+// plain useState with no persistence at all.
+const NAV_STORAGE_PREFIX = 'wisa:app:';
+function readStoredNav(key, fallback) {
+  try { return localStorage.getItem(NAV_STORAGE_PREFIX + key) || fallback; } catch { return fallback; }
+}
+function writeStoredNav(key, value) {
+  try { localStorage.setItem(NAV_STORAGE_PREFIX + key, value); } catch { /* storage blocked — nothing to do */ }
+}
+
 function App() {
-  const [activeModule, setActiveModule] = useState('home');
-  const [activeTab, setActiveTab] = useState('Overview'); // ใช้สำหรับหน้า Dashboard
-  const [uploadTab, setUploadTab] = useState('TBOS');     // ใช้สำหรับหน้า Upload (TBOS / Handheld)
-  const [templateTab, setTemplateTab] = useState('FORMAT'); // ใช้สำหรับหน้า Template Management (FORMAT / DEVICE / NQC MASTER)
+  const [activeModule, setActiveModule] = useState(() => readStoredNav('activeModule', 'home'));
+  const [activeTab, setActiveTab] = useState(() => readStoredNav('activeTab', 'Overview')); // ใช้สำหรับหน้า Dashboard
+  const [uploadTab, setUploadTab] = useState(() => readStoredNav('uploadTab', 'TBOS'));     // ใช้สำหรับหน้า Upload (TBOS / Handheld)
+  const [templateTab, setTemplateTab] = useState(() => readStoredNav('templateTab', 'FORMAT')); // ใช้สำหรับหน้า Template Management (FORMAT / DEVICE / NQC MASTER)
+
+  useEffect(() => { writeStoredNav('activeModule', activeModule); }, [activeModule]);
+  useEffect(() => { writeStoredNav('activeTab', activeTab); }, [activeTab]);
+  useEffect(() => { writeStoredNav('uploadTab', uploadTab); }, [uploadTab]);
+  useEffect(() => { writeStoredNav('templateTab', templateTab); }, [templateTab]);
 
   // Own connection for the standalone Assign Handheld module below — kept
   // separate from ListCreate's own useActiveBatch() instance (which still

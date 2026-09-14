@@ -45,6 +45,26 @@ test('handleListBatches: includes is_baseline for each batch, reflecting which o
   }
 });
 
+test('handleListBatches: excludes LTBO- import batches (they belong only to Summary/RUN OUT import, not the shared batch selector)', async () => {
+  const db = await connectDB();
+  const normalBatch = 'TEST-BATCHROUTE-NORMAL-' + Date.now();
+  const ltboBatch = 'LTBO-' + Date.now();
+  await createBatchIfNotExists(db, normalBatch);
+  await createBatchIfNotExists(db, ltboBatch);
+
+  try {
+    const res = mockRes();
+    await handleListBatches({}, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(res.body.some((b) => b.batch_id === normalBatch), 'normal batch should still be listed');
+    assert.ok(!res.body.some((b) => b.batch_id === ltboBatch), 'LTBO- batch should be excluded');
+  } finally {
+    await cleanupBatch(normalBatch);
+    await cleanupBatch(ltboBatch);
+  }
+});
+
 test('handleDeleteBatch: removes the batch row', async () => {
   const db = await connectDB();
   const batchId = 'TEST-BATCHROUTE-DEL-' + Date.now();

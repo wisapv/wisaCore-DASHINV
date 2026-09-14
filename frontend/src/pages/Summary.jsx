@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Factory, ClipboardList, ArrowLeft, Construction, Sparkles, UploadCloud, Loader2, FileSpreadsheet, Eye, AlertTriangle, Trash2, Layers, PlayCircle, CheckCircle2, XCircle, Download } from 'lucide-react';
+import { Factory, ClipboardList, ArrowLeft, Construction, Sparkles, UploadCloud, Loader2, FileSpreadsheet, AlertTriangle, Trash2, PlayCircle, CheckCircle2, XCircle, Download } from 'lucide-react';
 import Sparkle from '../components/Sparkle';
 import { API_BASE } from '../hooks/useActiveBatch';
 
@@ -70,9 +70,6 @@ const RunOutImport = ({ linkedBatchId }) => {
 
   const [importBatches, setImportBatches] = useState([]);
   const [isLoadingBatches, setIsLoadingBatches] = useState(true);
-  const [previewBatchId, setPreviewBatchId] = useState(null);
-  const [previewRows, setPreviewRows] = useState([]);
-  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
@@ -119,25 +116,6 @@ const RunOutImport = ({ linkedBatchId }) => {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
-
-  const handlePreview = (batchId) => {
-    if (previewBatchId === batchId) { setPreviewBatchId(null); setPreviewRows([]); return; }
-    setPreviewBatchId(batchId);
-    setIsPreviewLoading(true);
-    fetch(`${API_BASE}/api/ltbo/master?batchId=${encodeURIComponent(batchId)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((result) => setPreviewRows(result ? result.data : []))
-      .catch(() => {})
-      .finally(() => setIsPreviewLoading(false));
-  };
-
-  // UX: after a successful LTBO upload, automatically open the latest master
-  // preview so the operator can verify data before continuing to Process Stock.
-  useEffect(() => {
-    if (lastResult && importBatches.length > 0 && !previewBatchId) {
-      handlePreview(importBatches[0].batch_id);
-    }
-  }, [lastResult, importBatches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Loads whatever Process Stock last computed for this LTBO batch, if
   // anything — lets someone come back to a batch and see the last run's
@@ -230,7 +208,6 @@ const RunOutImport = ({ linkedBatchId }) => {
       const res = await fetch(`${API_BASE}/api/ltbo/batch/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setImportBatches((prev) => prev.filter((b) => b.batch_id !== batchId));
-      if (previewBatchId === batchId) { setPreviewBatchId(null); setPreviewRows([]); }
       if (processingBatchId === batchId) setProcessingBatchId(null);
     } catch {
       // best-effort — row just stays in the list, user can retry
@@ -306,7 +283,7 @@ const RunOutImport = ({ linkedBatchId }) => {
       </div>
 
       <div>
-        <p className="text-[11px] text-muted font-semibold mb-3">LTBO1021 batches ready for preview, processing, and export.</p>
+        <p className="text-[11px] text-muted font-semibold mb-3">LTBO1021 batches ready for processing and export.</p>
         <div className="bg-white rounded-[24px] border border-ink/[0.06] overflow-hidden">
           {isLoadingBatches ? (
             <div className="py-14 flex items-center justify-center text-muted"><Loader2 size={20} className="animate-spin" /></div>
@@ -326,7 +303,7 @@ const RunOutImport = ({ linkedBatchId }) => {
               </thead>
               <tbody className="divide-y divide-ink/5">
                 {importBatches.map((b) => (
-                  <tr key={b.batch_id} className={`hover:bg-[#FAFAF7] transition-colors ${previewBatchId === b.batch_id ? 'bg-accent/[0.06]' : ''}`}>
+                  <tr key={b.batch_id} className={`hover:bg-[#FAFAF7] transition-colors ${processingBatchId === b.batch_id ? 'bg-accent/[0.06]' : ''}`}>
                     <td className="px-5 py-3.5 font-mono font-bold text-ink text-[11px] flex items-center gap-2">
                       <FileSpreadsheet size={14} className="text-muted shrink-0" /> {b.batch_id}
                     </td>
@@ -345,14 +322,6 @@ const RunOutImport = ({ linkedBatchId }) => {
                           }`}
                         >
                           <PlayCircle size={12} /> Process Stock
-                        </button>
-                        <button
-                          onClick={() => handlePreview(b.batch_id)}
-                          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold text-[10.5px] transition-colors ${
-                            previewBatchId === b.batch_id ? 'bg-ink text-accent' : 'bg-accent/15 text-ink hover:bg-accent/25'
-                          }`}
-                        >
-                          <Eye size={12} /> {previewBatchId === b.batch_id ? 'Hide' : 'Preview'}
                         </button>
                         {confirmDeleteId === b.batch_id ? (
                           <>
@@ -385,90 +354,11 @@ const RunOutImport = ({ linkedBatchId }) => {
           )}
         </div>
 
-        {/* Preview renders as its own block below the list, not nested
-            inside a table row — nesting a second scrollable table with a
-            sticky column inside a <tr> broke the column alignment (the
-            outer table's own layout and the inner one's sticky positioning
-            fought each other). This also gives the 37-column table room to
-            breathe at full width instead of being squeezed into a cell. */}
-        {previewBatchId && (
-          <div className="mt-4 bg-ink rounded-[24px] overflow-hidden shadow-[0_8px_24px_rgba(20,20,15,0.12)]">
-            <div className="flex items-center gap-3 px-6 py-4 border-b border-white/10">
-              <div className="w-8 h-8 rounded-xl bg-accent flex items-center justify-center">
-                <Layers size={15} className="text-ink" />
-              </div>
-              <div>
-                <p className="text-[12px] font-bold text-white">Master Data Preview</p>
-                <p className="font-mono text-[10px] text-white/50">{previewBatchId}</p>
-              </div>
-              <span className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent/15 text-[9.5px] font-bold text-accent">
-                <span className="w-2 h-2 rounded-sm bg-accent"></span> Inventory Result
-              </span>
-            </div>
-            <div className="overflow-auto max-h-[460px] bg-white">
-              {isPreviewLoading ? (
-                <p className="text-[11px] text-muted font-semibold p-6">Loading…</p>
-              ) : (
-                <table className="text-left text-[10.5px] whitespace-nowrap border-collapse">
-                  <thead>
-                    <tr>
-                      {LTBO_COLUMNS.map((col) => (
-                        <th
-                          key={col.key}
-                          className={`px-3 py-3 font-extrabold uppercase text-[9px] tracking-wide sticky top-0 z-10 ${
-                            col.sticky
-                              ? 'sticky left-0 z-20 bg-ink text-accent border-r-2 border-accent/40 shadow-[4px_0_10px_rgba(20,20,15,0.12)]'
-                              : col.highlight
-                                ? 'bg-accent/25 text-ink'
-                                : 'bg-[#F3F2EA] text-ink/60'
-                          }`}
-                        >
-                          {col.label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink/5">
-                    {previewRows.map((r, i) => (
-                      <tr key={i} className="hover:bg-accent/[0.08] transition-colors">
-                        {LTBO_COLUMNS.map((col) => (
-                          <td
-                            key={col.key}
-                            className={`px-3.5 py-2.5 ${
-                              col.sticky
-                                ? 'sticky left-0 z-[5] font-extrabold text-ink bg-white border-r-2 border-accent/20 shadow-[4px_0_10px_rgba(20,20,15,0.08)]'
-                                : col.highlight
-                                  ? 'bg-accent/[0.08] font-bold text-ink'
-                                  : 'text-[#5C5A52]'
-                            }`}
-                          >
-                            {r[col.key] || <span className="text-ink/15">—</span>}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-
-        {previewBatchId && previewRows.length > 0 && !processingBatchId && (
-          <div className="mt-4 flex justify-end">
-            <button
-              onClick={() => handleToggleProcessing(previewBatchId)}
-              className="inline-flex items-center gap-2 bg-ink text-accent px-5 py-3 rounded-xl text-[11px] font-extrabold shadow-sm hover:opacity-90 transition-opacity"
-            >
-              <PlayCircle size={13} /> Proceed Process Stock
-            </button>
-          </div>
-        )}
-
-        {/* Process Stock panel — separate from the LTBO preview above since
-            they answer different questions (what's in the master list vs
-            what counting actually produced against it) and can both be
-            open at once. */}
+        {/* Process Stock panel — opens right under the list when "Process
+            Stock" is clicked. The preview step was removed (see backlog
+            discussion): clicking Process Stock goes straight to the final
+            result — cached results load immediately if they exist, and a
+            separate "Re-run" button is available to recompute. */}
         {processingBatchId && (
           <div className="mt-5 overflow-hidden rounded-[28px] border border-ink/10 bg-white shadow-[0_10px_30px_rgba(20,20,15,0.06)]">
             <div className="flex items-center gap-3 px-6 py-4 bg-[#11110E] border-b border-white/5">
@@ -509,7 +399,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                 const rows = processResults[processingBatchId].rows || [];
                 return (
               <>
-                <div className={`mx-5 mt-5 flex items-center gap-3 rounded-2xl border px-5 py-4 ${summary.blocked ? 'border-red-100 bg-red-50/90' : 'border-accent/20 bg-accent/[0.10]'}`}>
+                <div className={`mx-5 my-5 flex items-center gap-3 rounded-2xl border px-5 py-4 ${summary.blocked ? 'border-red-100 bg-red-50/90' : 'border-accent/20 bg-accent/[0.10]'}`}>
                   {summary.blocked ? (
                     <XCircle size={18} className="text-red-500 shrink-0" />
                   ) : (

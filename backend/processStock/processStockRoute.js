@@ -6,19 +6,19 @@ const { computeMatchKey, FIELD_ORDER } = require('../ltbo/ltboImportRoute');
 
 const router = express.Router();
 
-// PIC → INV bucket, per the locked 22-zone → INV1-11 mapping (see the
-// Inventory Sum design discussion). PIC is what handheld_stock_counts
-// actually carries — it's coarser than the real zone list (see the Zone
-// Assignment Rules backlog item: W should split into W_PC/W_SEQ/W_LINE,
-// which map to INV7/INV8/INV9 respectively, but nothing distinguishes them
-// yet). Every OTHER PIC maps cleanly to exactly one INV bucket (K's several
-// real zones all land on INV10 regardless, so no ambiguity there).
+// PIC → INV bucket, per the locked 22-zone → INV1-12 mapping (see the
+// Inventory Sum design discussion). PIC 'W' used to be one bucket for three
+// physically different sub-zones and had to be duplicated into all three
+// candidate buckets as a placeholder — Zone Assignment Rules now splits it
+// at the source (see assignAddrRoute.js's resolveWSubZone), so
+// handheld_stock_counts.pic already arrives as W_PC/W_SEQ/W_LINE (or 'P'
+// for the AAP1/AAS1 exception, → INV12) and every PIC maps cleanly to
+// exactly one INV bucket, same as everything else here (K's several real
+// zones all land on INV10 regardless, so no ambiguity there either).
 const PIC_TO_INV = {
   A: [5], T: [11], K: [10], S4: [3], TTAT: [3], R: [6], PC: [2], S5: [3], ALS: [4],
-  // W is genuinely ambiguous — see runProcessStock below for how it's
-  // handled (duplicated into all three, not guessed into just one).
+  W_PC: [7], W_SEQ: [8], W_LINE: [9], P: [12],
 };
-const W_AMBIGUOUS_INV_BUCKETS = [7, 8, 9];
 
 // Free Zone's own zone codes map directly and unambiguously (each zone
 // code IS the exact zone, no PIC-level coarseness — see the Free Zone
@@ -74,14 +74,7 @@ async function runProcessStock(db, ltboBatchId) {
       dock: row.dock, supplier: row.supplier, supplierPlant: row.s_plant, supplierDock: row.s_dock, partNo: row.part_no,
     });
     const qty = Number(row.qty) || 0;
-    if (row.pic === 'W') {
-      // Placeholder per the design discussion: the SAME total goes into
-      // all three candidate buckets (not split, not guessed into one) —
-      // this means summing INV7+INV8+INV9 together over-counts W parts by
-      // 3x until Zone Assignment Rules can actually tell the sub-zones
-      // apart. Each field individually still shows the true W total.
-      addQty(matchKey, W_AMBIGUOUS_INV_BUCKETS, qty, true);
-    } else if (PIC_TO_INV[row.pic]) {
+    if (PIC_TO_INV[row.pic]) {
       addQty(matchKey, PIC_TO_INV[row.pic], qty, false);
     }
     // An unrecognized PIC contributes to nothing — see fileErrors-style
@@ -142,13 +135,15 @@ async function runProcessStock(db, ltboBatchId) {
            (ltbo_batch_id, ltbo_row_id, match_key, part_no, group_id,
             inv_result_1, inv_result_2, inv_result_3, inv_result_4, inv_result_5,
             inv_result_6, inv_result_7, inv_result_8, inv_result_9, inv_result_10, inv_result_11,
+            inv_result_12,
             seq_no_1, seq_no_2, seq_no_3,
             total_qty, status, has_ambiguous_w, computed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           ltboBatchId, master.id, master.match_key, master.part_no, master.group_id,
           inv[1] || 0, inv[2] || 0, inv[3] || 0, inv[4] || 0, inv[5] || 0,
           inv[6] || 0, inv[7] || 0, inv[8] || 0, inv[9] || 0, inv[10] || 0, inv[11] || 0,
+          inv[12] || 0,
           seqNo1, seqNo2, seqNo3,
           entry ? entry.total : 0, status, entry && entry.ambiguousW ? 1 : 0, now,
         ]
@@ -232,12 +227,13 @@ const TEMPLATE_ROW_5 = [
 
 // Builds one data row (37 cells, matching TEMPLATE_ROW_4's column order
 // exactly) for a single LTBO master row + its computed Process Stock
-// result. Everything EXCEPT Attachment point 1-3 and Inventory result 1-11
+// result. Everything EXCEPT Attachment point 1-3 and Inventory result 1-12
 // passes through from the master row untouched (Process Stock never
 // touches those — see the table comments) — Attachment point 1-3 carry
 // SeqNo1-3 (see the Export design discussion: confirmed against the real
-// template, both are 3-character fields), and Inventory result 12-13
-// always stay 0 (see the INV1-11 mapping design discussion).
+// template, both are 3-character fields). Inventory result 12 is PIC 'P'
+// (the AAP1/AAS1 exception carved out of W — see the Zone Assignment Rules
+// backlog item); Inventory result 13 has no rule yet and always stays 0.
 function buildExportRow(master, result) {
   return [
     master.company, master.company_plant_code, master.group_id, master.no_of_inventory,
@@ -248,7 +244,7 @@ function buildExportRow(master, result) {
     result.seq_no_1 || '', result.seq_no_2 || '', result.seq_no_3 || '',
     result.inv_result_1, result.inv_result_2, result.inv_result_3, result.inv_result_4,
     result.inv_result_5, result.inv_result_6, result.inv_result_7, result.inv_result_8,
-    result.inv_result_9, result.inv_result_10, result.inv_result_11, 0, 0,
+    result.inv_result_9, result.inv_result_10, result.inv_result_11, result.inv_result_12, 0,
     master.stock_in_transit_system, master.stock_in_transit_adjust_qty, master.comments,
   ];
 }
@@ -289,7 +285,8 @@ async function handleExport(req, res) {
     const joined = await db.all(
       `SELECT m.*, r.seq_no_1, r.seq_no_2, r.seq_no_3,
               r.inv_result_1, r.inv_result_2, r.inv_result_3, r.inv_result_4, r.inv_result_5,
-              r.inv_result_6, r.inv_result_7, r.inv_result_8, r.inv_result_9, r.inv_result_10, r.inv_result_11
+              r.inv_result_6, r.inv_result_7, r.inv_result_8, r.inv_result_9, r.inv_result_10, r.inv_result_11,
+              r.inv_result_12
        FROM ltbo_master_rows m
        JOIN process_stock_results r ON r.ltbo_batch_id = m.batch_id AND r.ltbo_row_id = m.id
        WHERE m.batch_id = ?

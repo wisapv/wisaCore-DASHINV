@@ -56,7 +56,7 @@ test('cleanTargetRow mode "main": valid row passes', () => {
   assert.strictEqual(result.valid, true);
 });
 
-test('cleanTargetRow mode "handheld": TTAT supplier kept (valid)', () => {
+test('cleanTargetRow mode "handheld": TTAT supplier is KEPT — the Handheld-process spec says "this time we do NOT delete TTAT", unlike mode "main" which does', () => {
   const result = cleanTargetRow({
     'Part No 12 Digits': '123456789012',
     'Supplier': 'TTAT',
@@ -65,14 +65,13 @@ test('cleanTargetRow mode "handheld": TTAT supplier kept (valid)', () => {
   assert.strictEqual(result.valid, true);
 });
 
-test('cleanTargetRow mode "handheld": dock equals supplier kept (valid) and flagged', () => {
+test('cleanTargetRow mode "handheld": dock equals supplier dropped, same as mode "main" — even though the physical Address Master match later on can still find a real location for such a part via Part Procurement\'s Production Routing (see the real Part 52110-0K410-A3 case), Handheld must follow TBOS\'s Clean step rather than diverge from it', () => {
   const result = cleanTargetRow({
     'Part No 12 Digits': '123456789012',
     'Supplier': 'SW',
     'Dock IH routing': 'SW',
   }, { mode: 'handheld' });
-  assert.strictEqual(result.valid, true);
-  assert.strictEqual(result.isDockEqualsSupplier, true);
+  assert.strictEqual(result.valid, false);
 });
 
 test('cleanTargetRow mode "handheld": empty/"N/A" part no still invalid', () => {

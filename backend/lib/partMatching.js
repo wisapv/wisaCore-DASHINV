@@ -44,10 +44,18 @@ function buildPpIndex(ppRows, { onlyActive = true, excludePartDesc = [] } = {}) 
   return { ppMap, allPpMap, duplicateKeys };
 }
 
-// mode 'main': TTAT and Dock=Supplier rows are dropped (not physically counted).
-// mode 'handheld': those rows represent parts physically present in the warehouse
-// and must be kept — only empty/N/A part numbers are ever invalid. The caller gets
-// an isDockEqualsSupplier flag so it can dedupe that subgroup afterward.
+// mode 'main': TTAT and Dock=Supplier rows are dropped.
+// mode 'handheld': per the Handheld-process spec ("if Dock IH routing =
+// Supplier delete... this time we do NOT delete TTAT"), Dock=Supplier rows
+// are ALSO dropped here — confirmed against a real reproduced case
+// (52110-0K410-A3, Dock IH routing/Supplier "AAS1S") where Dock=Supplier
+// still resolved to a real physical address via Part Procurement's own
+// Production Routing; per spec it's dropped anyway, no exception. TTAT is
+// the one difference from mode 'main': the spec says NOT to drop TTAT for
+// Handheld, so only empty/N/A part numbers and Dock=Supplier are invalid
+// here. isDockEqualsSupplier stays on the returned object for any caller
+// still branching on it, though with this row now invalid, no row ever
+// reaches dedupeDockEqualsSupplierRows with the flag set anymore.
 function cleanTargetRow(t, { mode } = {}) {
   const partNo = getField(t, 'PART_NO_TG');
   const supplier = getField(t, 'SUPPLIER');
@@ -57,10 +65,10 @@ function cleanTargetRow(t, { mode } = {}) {
   if (partNo.toUpperCase() === 'N/A') return { valid: false, reason: 'N/A part no' };
 
   const isDockEqualsSupplier = dockIH !== '' && dockIH === supplier;
+  if (isDockEqualsSupplier) return { valid: false, reason: 'dock equals supplier', isDockEqualsSupplier };
 
   if (mode === 'main') {
     if (supplier === 'TTAT') return { valid: false, reason: 'TTAT supplier' };
-    if (isDockEqualsSupplier) return { valid: false, reason: 'dock equals supplier' };
     return { valid: true, isDockEqualsSupplier };
   }
 
@@ -138,16 +146,26 @@ function computeShop(ppDock, { mode }) {
 // first-ever batch, nothing to compare against) naturally makes every valid
 // current row "new".
 function findNewPartsSinceBatch(currentTgRows, previousTgRows) {
+  // Only excludes rows with no usable Part No — deliberately NOT reusing
+  // cleanTargetRow's mode='handheld' (which now also drops Dock=Supplier
+  // rows for the Handheld pipeline's own business rule — see that
+  // function's comment). New Parts detection is a different feature with
+  // no reason to inherit that rule: a genuinely new Dock=Supplier part
+  // should still surface here even though it won't appear in Handheld's
+  // own output.
+  const isUsablePartNo = (row) => {
+    const partNo = getField(row, 'PART_NO_TG');
+    return partNo !== '' && partNo.toUpperCase() !== 'N/A';
+  };
+
   const previousKeys = new Set();
   for (const row of previousTgRows) {
-    const { valid } = cleanTargetRow(row, { mode: 'handheld' });
-    if (!valid) continue;
+    if (!isUsablePartNo(row)) continue;
     previousKeys.add(buildMatchKey(getField(row, 'DOCK_IH'), getField(row, 'PART_NO_TG')));
   }
 
   return currentTgRows.filter((row) => {
-    const { valid } = cleanTargetRow(row, { mode: 'handheld' });
-    if (!valid) return false;
+    if (!isUsablePartNo(row)) return false;
     const keyTG = buildMatchKey(getField(row, 'DOCK_IH'), getField(row, 'PART_NO_TG'));
     return !previousKeys.has(keyTG);
   });

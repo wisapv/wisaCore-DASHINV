@@ -680,18 +680,20 @@ test('handlePreviewMain: two target_ro rows with genuinely different keyTG both 
   }
 });
 
-test('handleProcessAssignAddr: the new keyTG dedup composes correctly with the existing Dock=Supplier-subgroup dedup', async () => {
+test('handleProcessAssignAddr: the keyTG dedup composes correctly with the Dock=Supplier drop', async () => {
   const batchId = 'TEST-DEDUP-HANDHELD-COMPOSE-' + Date.now();
   const db = await connectDB();
   const now = new Date().toISOString();
   await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
 
-  // Part A: a Dock=Supplier subgroup pair (Dock IH routing === Supplier),
-  // two rows differing only by Source — this is what dedupeDockEqualsSupplierRows
-  // (keyed by Part No only) already collapses today, unrelated to this task.
+  // Part A: a Dock=Supplier pair (Dock IH routing === Supplier) — per the
+  // Zone Assignment Rules / Handheld-process spec discussion, cleanTargetRow
+  // now drops these entirely for mode 'handheld' too (previously kept +
+  // deduped; confirmed wrong against the original spec, which drops
+  // Dock=Supplier universally, Main and Handheld alike).
   // Part B: a general keyTG duplicate pair (same Dock IH routing + Part No)
-  // differing only in an unused source column — the new dedup this task adds.
-  // Part C: a genuinely different part, must never be dropped by either dedup.
+  // differing only in an unused source column — dedup this task adds.
+  // Part C: a genuinely different part, must never be dropped by either rule.
   const tgRows = [
     { 'Part No 12 Digits': 'AAAAAAAAAAAA', 'Supplier': 'SUPD', 'Dock IH routing': 'SUPD', 'Source': 'S1' },
     { 'Part No 12 Digits': 'AAAAAAAAAAAA', 'Supplier': 'SUPD', 'Dock IH routing': 'SUPD', 'Source': 'S2' },
@@ -748,13 +750,12 @@ test('handleProcessAssignAddr: the new keyTG dedup composes correctly with the e
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.body.hold.length, 0);
     assert.strictEqual(res.body.remind.length, 0);
-    // One row per distinct part: the Dock=Supplier pair and the keyTG
-    // duplicate pair each collapse to one, the genuinely different part
-    // is untouched by both dedups.
-    assert.strictEqual(res.body.data.length, 3);
+    // Part A (Dock=Supplier) is dropped entirely now; Part B's keyTG
+    // duplicate pair collapses to one; Part C is untouched.
+    assert.strictEqual(res.body.data.length, 2);
 
     const partNumbers = res.body.data.map((row) => row['Part no.']).sort();
-    assert.deepStrictEqual(partNumbers, ['AAAAAAAAAAAA', 'BBBBBBBBBBBB', 'CCCCCCCCCCCC']);
+    assert.deepStrictEqual(partNumbers, ['BBBBBBBBBBBB', 'CCCCCCCCCCCC']);
   } finally {
     await cleanupBatch(batchId);
   }

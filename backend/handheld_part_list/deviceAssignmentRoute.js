@@ -45,6 +45,10 @@ async function handleGetWorkModes(req, res) {
 
 // Restore state for the web's AssignHandheld page (which group is on which
 // device for this batch) — same "restore on mount" pattern as final-data.
+// Also returns sentAt (upload_batches.handheld_sent_at) so the page can show
+// a persistent "Last sent: ..." indicator, not just a one-time success
+// popup that disappears — previously there was no way to tell, after a
+// refresh, whether Send to Handheld had ever actually been used.
 async function handleGetAssignments(req, res) {
   try {
     const { batchId } = req.query;
@@ -55,15 +59,22 @@ async function handleGetAssignments(req, res) {
       'SELECT pic, short_addr AS shortAddr, device_id AS deviceId FROM handheld_assignments WHERE batch_id = ?',
       batchId
     );
-    res.json({ data: rows });
+    const batchRow = await db.get('SELECT handheld_sent_at FROM upload_batches WHERE batch_id = ?', batchId);
+    res.json({ data: rows, sentAt: batchRow ? batchRow.handheld_sent_at : null });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load device assignments' });
   }
 }
 
-// Replace-all-for-batch: the web always sends its full current mapping
-// (assignments state), so the simplest correct write is delete-then-insert
-// inside one transaction rather than diffing.
+// True diff, not replace-all-for-batch: a (pic, short_addr, device_id)
+// triple that's unchanged between the old and new state is never touched —
+// no delete, no re-insert, not even its updated_at. Previously this did a
+// blanket DELETE-all-then-INSERT-all every single Send to Handheld click,
+// which meant an unrelated device already mid-count could, in principle,
+// have its row briefly (or on a payload that had silently drifted,
+// permanently) disappear even though nothing about it was meant to change.
+// Diffing at the row level makes an untouched device's assignment provably
+// untouched by someone else's edit elsewhere in the same batch.
 async function handleSaveAssignments(req, res) {
   try {
     const { batchId, assignments } = req.body;
@@ -73,17 +84,35 @@ async function handleSaveAssignments(req, res) {
     const db = await connectDB();
     const now = new Date().toISOString();
 
+    const existingRows = await db.all(
+      'SELECT pic, short_addr, device_id FROM handheld_assignments WHERE batch_id = ?',
+      batchId
+    );
+    const rowKey = (pic, shortAddr, deviceId) => `${pic}::${shortAddr}::${deviceId}`;
+    const existingKeys = new Set(existingRows.map((r) => rowKey(r.pic, r.short_addr, r.device_id)));
+
+    const incoming = assignments.filter((a) => a.pic && a.shortAddr && a.deviceId);
+    const incomingKeys = new Set(incoming.map((a) => rowKey(a.pic, a.shortAddr, a.deviceId)));
+
+    const toInsert = incoming.filter((a) => !existingKeys.has(rowKey(a.pic, a.shortAddr, a.deviceId)));
+    const toDelete = existingRows.filter((r) => !incomingKeys.has(rowKey(r.pic, r.short_addr, r.device_id)));
+
     await db.run('BEGIN TRANSACTION');
     try {
-      await db.run('DELETE FROM handheld_assignments WHERE batch_id = ?', batchId);
-      for (const a of assignments) {
-        if (!a.pic || !a.shortAddr || !a.deviceId) continue;
+      for (const r of toDelete) {
+        await db.run(
+          'DELETE FROM handheld_assignments WHERE batch_id = ? AND pic = ? AND short_addr = ? AND device_id = ?',
+          [batchId, r.pic, r.short_addr, r.device_id]
+        );
+      }
+      for (const a of toInsert) {
         await db.run(
           `INSERT INTO handheld_assignments (batch_id, pic, short_addr, device_id, updated_at)
            VALUES (?, ?, ?, ?, ?)`,
           [batchId, a.pic, a.shortAddr, a.deviceId, now]
         );
       }
+      await db.run('UPDATE upload_batches SET handheld_sent_at = ? WHERE batch_id = ?', [now, batchId]);
       await db.run('COMMIT');
     } catch (err) {
       await db.run('ROLLBACK');
@@ -91,7 +120,7 @@ async function handleSaveAssignments(req, res) {
     }
 
     emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
-    res.json({ success: true, count: assignments.length });
+    res.json({ success: true, count: incoming.length, added: toInsert.length, removed: toDelete.length, sentAt: now });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save device assignments' });
   }
@@ -144,6 +173,34 @@ async function handleGetMyJobs(req, res) {
     res.json({ data: Array.from(counts.values()) });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load jobs for device' });
+  }
+}
+
+// GET /api/handheld-assign/my-free-zones — "does this device have a Free
+// Zone assignment, and if so which zone?" A Free Zone assignment is a
+// handheld_assignments row whose (pic, short_addr) matches a real active
+// zone_definitions row (dock=pic, code=short_addr) rather than a Fix Zone
+// address from finalData (see handleGetMyJobs above, which only ever
+// matches Fix Zone rows for exactly this reason — the two never collide).
+// The app uses this (alongside my-jobs) to decide which of Home's two
+// entry points to actually show, instead of showing both unconditionally
+// regardless of what this device is assigned to.
+async function handleGetMyFreeZones(req, res) {
+  try {
+    const { batchId, deviceId } = req.query;
+    if (!batchId || !deviceId) return res.status(400).json({ error: 'Missing batchId or deviceId' });
+
+    const db = await connectDB();
+    const rows = await db.all(
+      `SELECT zd.code, zd.dock
+       FROM handheld_assignments ha
+       JOIN zone_definitions zd ON zd.dock = ha.pic AND zd.code = ha.short_addr AND zd.status = 'active'
+       WHERE ha.batch_id = ? AND ha.device_id = ?`,
+      [batchId, deviceId]
+    );
+    res.json({ data: rows.map((r) => ({ code: r.code, dock: r.dock })) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load free zone assignments' });
   }
 }
 
@@ -443,6 +500,9 @@ async function handleGetFreeZoneDetail(req, res) {
     const data = scans.map((s) => ({
       zone: zoneByDevice[s.device_id] || 'Unassigned',
       dock: s.dock,
+      supplier: s.supplier,
+      splant: s.s_plant,
+      sdock: s.s_dock,
       partNo: s.part_no,
       partName: partNameByNo[s.part_no] || '',
       qty: s.qty,
@@ -571,10 +631,13 @@ async function handleGetMonitor(req, res) {
 
     const db = await connectDB();
 
-    // --- Fix zone: group by PIC (not by the finer zone name — see the
-    // "Zone Assignment Rules" backlog item; PIC is all handheld_stock_counts
-    // and finalData currently carry, e.g. every W_PC/W_SEQ/W_LINE part
-    // shows up under one shared "W" row until that's built) ---
+    // --- Fix zone: group by PIC. PIC is what handheld_stock_counts and
+    // finalData carry — used to be coarser than the real zone list for "W"
+    // (every W_PC/W_SEQ/W_LINE part lumped under one shared "W" row), but
+    // Zone Assignment Rules now splits W into W_PC/W_SEQ/W_LINE (and 'P'
+    // for the AAP1/AAS1 exception) at the source — see
+    // assignAddrRoute.js's resolveWSubZone — so grouping by PIC here
+    // already shows them as distinct rows, no further change needed. ---
     const results = await getHandheldResults(db, batchId);
     const finalData = results ? results.finalData : [];
     const totalByPic = {};
@@ -697,22 +760,19 @@ async function handleGetOverview(req, res) {
       percent: overallTotal > 0 ? Math.round((overallCounted / overallTotal) * 100) : 0,
     };
 
-    // --- Shop Progress by zone: PIC-level real data, with PIC "W" shown as
-    // three mock rows (W_PC/W_SEQ/W_LINE) carrying W's own numbers
-    // duplicated — a placeholder until Zone Assignment Rules can actually
-    // tell them apart (see the backlog item). Every other PIC shows as one
-    // real bar since splitting it further isn't needed for INV mapping
-    // (see the Inv01-11 mapping discussion — only W loses information by
-    // staying PIC-level). ---
     // --- Shop Progress by zone: PIC-level real data, relabeled to the zone
     // name your PIC→zone table maps each PIC to (see the "W_LINE W SW,S9 /
-    // T_LINE T ST / ..." mapping from the design discussion) — PIC "W" is
-    // the one exception, shown as three mock rows (W_PC/W_SEQ/W_LINE)
-    // carrying W's own numbers duplicated, a placeholder until Zone
-    // Assignment Rules can actually tell them apart (see the backlog item).
+    // T_LINE T ST / ..." mapping from the design discussion). PIC 'W' used
+    // to be one bucket for three physically different sub-zones and was
+    // shown as three mock rows carrying the same numbers — Zone Assignment
+    // Rules now splits it at the source (see assignAddrRoute.js's
+    // resolveWSubZone), so PIC already arrives as W_PC/W_SEQ/W_LINE (or 'P'
+    // for the AAP1/AAS1 exception) and every PIC shows as one real bar,
+    // same as everything else here. ---
     const PIC_TO_ZONE_LABEL = {
       A: 'A_LINE', T: 'T_LINE', K: 'K_LINE', S4: 'S4_S-LANE', TTAT: 'S6_SEQ',
       R: 'R_LINE', PC: 'WH3_PC', S5: 'S5_SEQ', ALS: 'SEQ1',
+      W_PC: 'W_PC', W_SEQ: 'W_SEQ', W_LINE: 'W_LINE', P: 'P_SEQ',
     };
     const totalByPic = {};
     for (const row of finalData) {
@@ -730,11 +790,7 @@ async function handleGetOverview(req, res) {
     for (const pic of Object.keys(totalByPic).sort()) {
       const total = totalByPic[pic];
       const counted = countedByPic[pic] || 0;
-      if (pic === 'W') {
-        ['W_PC', 'W_SEQ', 'W_LINE'].forEach((label) => zoneProgress.push({ zone: label, counted, total, isMock: true }));
-      } else {
-        zoneProgress.push({ zone: PIC_TO_ZONE_LABEL[pic] || pic, counted, total, isMock: false });
-      }
+      zoneProgress.push({ zone: PIC_TO_ZONE_LABEL[pic] || pic, counted, total, isMock: false });
     }
 
     // --- Local / Import / Inhouse: composition of the target list itself
@@ -848,21 +904,24 @@ async function handleGetDetail(req, res) {
     const finalData = results ? results.finalData : [];
 
     const countRows = await db.all(
-      `SELECT pic, short_addr, addr, kbn, qty, box, pcs, seq, order_no, not_found
+      `SELECT pic, short_addr, addr, kbn, part_no, qty, box, pcs, seq, order_no, not_found
        FROM handheld_stock_counts WHERE batch_id = ?`,
       batchId
     );
     const countMap = {};
     for (const r of countRows) countMap[`${r.pic}::${r.short_addr}::${r.addr}::${r.kbn}`] = r;
 
-    // SUM STOCK: total counted qty across every address a given Part No +
-    // Kbn combination shows up at in this batch (the same part can appear
-    // at more than one address — see the Process Stock / zone-summing
-    // discussion) — not just the one row's own qty.
+    // SUM STOCK: total counted qty across every address a given Part No
+    // shows up at in this batch (the same part can appear at more than one
+    // address — see the Process Stock / zone-summing discussion) — not
+    // just the one row's own qty. Grouped by Part No, not Kbn — a Kbn can
+    // in principle be reused across different Part Numbers, which would
+    // silently sum two unrelated parts together.
     const sumByPart = {};
     for (const r of countRows) {
       if (r.qty == null) continue;
-      const partKey = `${r.kbn}`; // kbn already uniquely identifies a part within a batch here
+      const partKey = (r.part_no || '').trim();
+      if (!partKey) continue;
       sumByPart[partKey] = (sumByPart[partKey] || 0) + Number(r.qty || 0);
     }
 
@@ -876,6 +935,9 @@ async function handleGetDetail(req, res) {
         shortAddr: row.ShortAddr || '',
         shop: row.Shop || '',
         dock: row.Dock || '',
+        supplier: row.Supplier || '',
+        splant: row['S.plant'] || '',
+        sdock: row['S.dock'] || '',
         partNo: row['Part no.'] || '',
         partName: row['Part name'] || '',
         kbn: row.kbn || '',
@@ -885,7 +947,7 @@ async function handleGetDetail(req, res) {
         pcs: counted ? counted.pcs : '',
         seq: counted ? counted.seq : '',
         order: counted ? counted.order_no : null, // always null until the handheld app itself sends one — see the order_no migration comment in database.js
-        sumStock: sumByPart[row.kbn] || 0,
+        sumStock: sumByPart[(row['Part no.'] || '').trim()] || 0,
         status,
       };
     });
@@ -901,6 +963,7 @@ router.get('/device-assignments', handleGetAssignments);
 router.get('/my-work-modes', handleGetWorkModes);
 router.post('/device-assignments', express.json({ limit: '5mb' }), handleSaveAssignments);
 router.get('/my-jobs', handleGetMyJobs);
+router.get('/my-free-zones', handleGetMyFreeZones);
 router.get('/job-addresses', handleGetJobAddresses);
 router.get('/job-address-detail', handleGetJobAddressDetail);
 router.get('/job-zone-parts', handleGetJobZoneParts);
@@ -919,6 +982,7 @@ module.exports.handleGetAssignments = handleGetAssignments;
 module.exports.handleGetWorkModes = handleGetWorkModes;
 module.exports.handleSaveAssignments = handleSaveAssignments;
 module.exports.handleGetMyJobs = handleGetMyJobs;
+module.exports.handleGetMyFreeZones = handleGetMyFreeZones;
 module.exports.handleGetJobAddresses = handleGetJobAddresses;
 module.exports.handleGetJobAddressDetail = handleGetJobAddressDetail;
 module.exports.handleGetJobZoneParts = handleGetJobZoneParts;

@@ -262,6 +262,8 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
     if (!window.confirm('This will start a new shared batch for everyone — continue?')) return;
     try {
       await startNewBatch();
+      setSubTab('new');
+      setIsViewingHistoricalBatch(false);
     } catch {
       alert('Failed to start a new batch.');
     }
@@ -499,7 +501,9 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
             <button
               onClick={() => {
                 if (activeBatchId && !window.confirm('Start a new batch? The current active batch will no longer be active (it stays in Upload History).')) return;
-                startNewBatch().catch(() => alert('Failed to start a new batch.'));
+                startNewBatch()
+                  .then(() => { setSubTab('new'); setIsViewingHistoricalBatch(false); })
+                  .catch(() => alert('Failed to start a new batch.'));
               }}
               className="flex items-center gap-2 bg-ink text-accent px-5 py-2.5 rounded-xl font-bold text-sm hover:opacity-90 transition-colors mb-2"
             >

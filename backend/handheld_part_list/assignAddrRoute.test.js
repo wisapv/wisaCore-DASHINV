@@ -111,18 +111,19 @@ test('generateExcelBuffer: a blank ("") field value writes a genuinely absent ce
   // posts back, built from this route's own blankOrTrim(...) preview data,
   // where a blank field is already reduced to ''.
   const dataRows = [
-    { Shop: 'A', Group: 'SR481DA1', Dock: 'ZZ', Supplier: '', 'Part no.': '123456789012' },
+    { Shop: 'A', Group: 'SR481DA1', Source: '1', Dock: 'ZZ', Supplier: '', 'Part no.': '123456789012' },
   ];
 
   const buffer = generateExcelBuffer(dataRows);
   const wb = xlsx.read(buffer, { type: 'buffer' });
   const ws = wb.Sheets[wb.SheetNames[0]];
 
-  // Header row 1, data row 2. Columns in insertion order: Shop(A), Group(B),
-  // Dock(C), Supplier(D), Part no.(E).
-  assert.strictEqual(ws['D2'], undefined, 'blank field must produce a genuinely absent cell, not an empty-string cell');
+  // Fixed export column order (see HANDHELD_EXPORT_COLUMNS): Group(A),
+  // Shop(B), Source(C), Dock(D), Supplier(E), S.plant(F), S.dock(G),
+  // Part no.(H), ...
+  assert.strictEqual(ws['E2'], undefined, 'blank field must produce a genuinely absent cell, not an empty-string cell');
   // Sanity check: a real, non-blank field in the same row is still a real cell.
-  assert.strictEqual(ws['C2'].v, 'ZZ');
+  assert.strictEqual(ws['D2'].v, 'ZZ');
 });
 
 const ADDR_HEADERS = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];

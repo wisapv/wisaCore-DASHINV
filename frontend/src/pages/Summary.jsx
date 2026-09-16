@@ -443,7 +443,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                       <tr className="text-muted uppercase text-[9px]">
                         <th className="px-4 py-2.5 font-bold">Part No</th>
                         <th className="px-4 py-2.5 font-bold">Status</th>
-                        {Array.from({ length: 11 }, (_, i) => (
+                        {Array.from({ length: 12 }, (_, i) => (
                           <th key={i} className="px-3 py-2.5 font-bold text-right">Inv{i + 1}</th>
                         ))}
                         <th className="px-3 py-2.5 font-bold">Seq1</th>
@@ -465,7 +465,7 @@ const RunOutImport = ({ linkedBatchId }) => {
                               <span className="ml-1.5 text-[9px] font-bold text-orange-500" title="From PIC=W — duplicated into Inv7/8/9, see the Zone Assignment Rules backlog">⚠ W</span>
                             )}
                           </td>
-                          {Array.from({ length: 11 }, (_, idx) => (
+                          {Array.from({ length: 12 }, (_, idx) => (
                             <td key={idx} className="px-3 py-2.5 text-right font-semibold text-ink">{r[`inv_result_${idx + 1}`] || '—'}</td>
                           ))}
                           <td className="px-3 py-2.5 text-muted">{r.seq_no_1 || '—'}</td>

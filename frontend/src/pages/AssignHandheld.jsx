@@ -119,6 +119,8 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
   // (handheld_assignments table, one row per group+device) — restored here
   // on mount so a page refresh doesn't lose the work.
   const [assignments, setAssignments] = useState({});
+  const [serverAssignments, setServerAssignments] = useState({}); // last known PERSISTED truth (not live-edited) — used to diff against before a re-send, see sendDiff below
+  const [sentAt, setSentAt] = useState(null); // upload_batches.handheld_sent_at — persistent "Last sent" indicator, survives a refresh (previously only a one-time popup existed)
   const loadAssignments = () => {
     if (!selectedBatchId) return;
     fetch(`${API_BASE}/api/handheld-assign/device-assignments?batchId=${selectedBatchId}`)
@@ -132,6 +134,8 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
           next[key].push(r.deviceId);
         });
         setAssignments(next);
+        setServerAssignments(next);
+        setSentAt(result && result.sentAt ? result.sentAt : null);
       })
       .catch((err) => console.error("Failed to load device assignments", err));
   };
@@ -229,18 +233,17 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
 
 
   // The real groups to distribute to devices: rows grouped by short address
-  // (ShortAddr), scoped to the selected PIC — or across every PIC when
-  // "All" is selected. In "All" view the group id carries the PIC too, so
-  // two different PICs that happen to share a short-address code don't
-  // collide into one card.
+  // (ShortAddr) — across every PIC, always. This must NOT be scoped by
+  // selectedPic: a group already assigned to a device has to keep showing
+  // on that device's card no matter which PIC the filter is currently on,
+  // otherwise switching the filter makes already-assigned devices look
+  // empty (confirmed bug — assign under PIC=S5, switch filter to TTAT, the
+  // device appeared to have nothing assigned). The PIC filter only narrows
+  // the Unassigned pool — see unassignedGroupsAll below.
   const baseGroups = useMemo(() => {
     if (!finalHandheldData) return [];
-    const scoped = selectedPic === "All"
-      ? finalHandheldData
-      : finalHandheldData.filter((r) => (r.PIC || "Unassigned") === selectedPic);
-
     const byKey = new Map();
-    scoped.forEach((row) => {
+    finalHandheldData.forEach((row) => {
       const pic = row.PIC || "Unassigned";
       const shortAddr = row.ShortAddr || "Unk";
       const key = `${pic}::${shortAddr}`;
@@ -248,27 +251,94 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
       byKey.get(key).count += 1;
     });
     return Array.from(byKey.values()).sort((a, b) => a.code.localeCompare(b.code));
-  }, [finalHandheldData, selectedPic]);
+  }, [finalHandheldData]);
 
   // One group per active Free Zone (see zoneList above) — id format
   // matches baseGroups ("<pic>::<shortAddr>", here dock::code) so it plugs
   // into the exact same assignment map, drag/drop handlers and
   // sendToHandheld payload with no special-casing. count is fixed at 1
   // (there's no "addresses" to count for a zone — see isZone flag, used
-  // only to skip these from the Handheld-data-derived Excel export).
+  // only to skip these from the Handheld-data-derived Excel export). Not
+  // scoped by selectedPic either, same reasoning as baseGroups above.
   const zoneBaseGroups = useMemo(() => {
-    const scoped = selectedPic === "All" ? activeZones : activeZones.filter((z) => z.dock === selectedPic);
-    return scoped
+    return activeZones
       .map((z) => ({ id: `${z.dock}::${z.code}`, code: z.code, pic: z.dock, count: 1, isZone: true }))
       .sort((a, b) => a.code.localeCompare(b.code));
-  }, [activeZones, selectedPic]);
+  }, [activeZones]);
 
-  // Merge in device assignments kept in `assignments` (see above). `devices`
-  // is an array now — a group can be shared by more than one device.
-  const groups = useMemo(
-    () => [...baseGroups, ...zoneBaseGroups].map((g) => ({ ...g, devices: assignments[g.id] || [] })),
-    [baseGroups, zoneBaseGroups, assignments]
+  // Merge in device assignments kept in `assignments` (see above) — this is
+  // the REAL, granular list (one entry per ShortAddr, exactly what
+  // `assignments` is actually keyed by and what sendToHandheld's payload is
+  // built from below). Never render this directly for W_PC/W_SEQ/W_LINE/P —
+  // see displayGroups.
+  const realGroups = useMemo(
+    () => baseGroups.map((g) => ({ ...g, devices: assignments[g.id] || [] })),
+    [baseGroups, assignments]
   );
+
+  // W_PC/W_SEQ/W_LINE/P (see the Zone Assignment Rules backlog item)
+  // produce far more tiny per-ShortAddr tiles than any other PIC — a
+  // byproduct of splitting what used to be one PIC 'W' into these four.
+  // Free Zone doesn't have this problem (one tile per whole zone already),
+  // so here we bundle every real tile for these 4 PICs into a single
+  // Free-Zone-style tile each, purely for display/dragging — `assignments`
+  // itself is NEVER written under a bundled id (see resolveRealIds,
+  // assignSelected, handleDrop, removeFromDevice, duplicateDeviceTo below,
+  // which all fan a bundled id back out to its real members before writing),
+  // so the actual saved shape (sendToHandheld's payload, built from
+  // realGroups not this) stays exactly as granular as it always was.
+  // A bundle only forms while every member shares the same assignment
+  // state (all unassigned together, or all assigned to one same device) —
+  // if a PIC's real tiles end up split across different devices, those
+  // fall back to showing individually so nothing gets misrepresented.
+  const CONSOLIDATED_PICS = ['W_PC', 'W_SEQ', 'W_LINE', 'P'];
+  const displayGroups = useMemo(() => {
+    const passthrough = [];
+    const byPic = new Map();
+    realGroups.forEach((g) => {
+      if (!CONSOLIDATED_PICS.includes(g.pic)) { passthrough.push(g); return; }
+      if (!byPic.has(g.pic)) byPic.set(g.pic, { unassigned: [], assigned: [] });
+      (g.devices.length === 0 ? byPic.get(g.pic).unassigned : byPic.get(g.pic).assigned).push(g);
+    });
+    byPic.forEach((bucket, pic) => {
+      if (bucket.unassigned.length > 0) {
+        passthrough.push({
+          id: `CONSOLIDATED::${pic}::U`, code: pic, pic, isConsolidated: true, devices: [],
+          count: bucket.unassigned.reduce((s, g) => s + g.count, 0),
+          memberIds: bucket.unassigned.map((g) => g.id),
+        });
+      }
+      if (bucket.assigned.length > 0) {
+        const sigs = bucket.assigned.map((g) => g.devices.slice().sort().join(','));
+        const allSameDevice = sigs.every((s) => s === sigs[0]);
+        if (allSameDevice) {
+          passthrough.push({
+            id: `CONSOLIDATED::${pic}::A`, code: pic, pic, isConsolidated: true,
+            devices: bucket.assigned[0].devices,
+            count: bucket.assigned.reduce((s, g) => s + g.count, 0),
+            memberIds: bucket.assigned.map((g) => g.id),
+          });
+        } else {
+          passthrough.push(...bucket.assigned);
+        }
+      }
+    });
+    return passthrough;
+  }, [realGroups]);
+
+  const groups = useMemo(
+    () => [...zoneBaseGroups.map((g) => ({ ...g, devices: assignments[g.id] || [] })), ...displayGroups],
+    [displayGroups, zoneBaseGroups, assignments]
+  );
+
+  // Resolves a group id from the DISPLAY list (`groups`) back to the real
+  // storage ids that `assignments` is actually keyed by — a passthrough for
+  // every ordinary/zone tile, a fan-out to every bundled ShortAddr for a
+  // consolidated W_PC/W_SEQ/W_LINE/P tile.
+  const resolveRealIds = (id) => {
+    const g = groups.find((x) => x.id === id);
+    return g && g.isConsolidated ? g.memberIds : [id];
+  };
 
 
   const totalAddresses = useMemo(() => groups.reduce((sum, g) => sum + g.count, 0), [groups]);
@@ -278,7 +348,10 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
     [groups]
   );
 
-  const unassignedGroupsAll = useMemo(() => groups.filter((g) => g.devices.length === 0), [groups]);
+  const unassignedGroupsAll = useMemo(() => {
+    const unassigned = groups.filter((g) => g.devices.length === 0);
+    return selectedPic === "All" ? unassigned : unassigned.filter((g) => g.pic === selectedPic);
+  }, [groups, selectedPic]);
 
   const unassignedGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -311,10 +384,11 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
 
     const target = targetDevice;
     const count = selectedIds.length;
+    const realIds = selectedIds.flatMap(resolveRealIds);
 
     setAssignments((prev) => {
       const next = { ...prev };
-      selectedIds.forEach((id) => {
+      realIds.forEach((id) => {
         const existing = next[id] || [];
         if (!existing.includes(target)) next[id] = [...existing, target];
       });
@@ -330,11 +404,14 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
   // once the last device is removed.
   const removeFromDevice = (id, device) => {
     const group = groups.find((g) => g.id === id);
+    const realIds = resolveRealIds(id);
     setAssignments((prev) => {
       const next = { ...prev };
-      const remaining = (next[id] || []).filter((d) => d !== device);
-      if (remaining.length > 0) next[id] = remaining;
-      else delete next[id];
+      realIds.forEach((realId) => {
+        const remaining = (next[realId] || []).filter((d) => d !== device);
+        if (remaining.length > 0) next[realId] = remaining;
+        else delete next[realId];
+      });
       return next;
     });
     setSelectedIds((prev) => prev.filter((x) => x !== id));
@@ -343,10 +420,15 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
   };
 
   const handleDragStart = (event, groupId, sourceDevice = null) => {
+    // If the tile being dragged is part of the current checkbox selection
+    // (and more than one is selected), drag the WHOLE selection together —
+    // previously only the one tile under the cursor ever moved, so ticking
+    // several boxes and dragging still moved just one at a time.
+    const idsToMove = selectedIds.includes(groupId) && selectedIds.length > 1 ? selectedIds : [groupId];
     setDraggedGroupId(groupId);
     setDraggedFromDevice(sourceDevice); // null = dragged from the Unassigned list
     event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(groupId));
+    event.dataTransfer.setData("text/plain", JSON.stringify(idsToMove));
   };
 
   const handleDragEnd = () => {
@@ -368,47 +450,65 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
   const handleDrop = (event, targetDeviceName) => {
     event.preventDefault();
 
-    // Group ids are now strings ("<PIC>::<ShortAddr>"), not numbers — no
-    // Number() cast here anymore.
-    const transferredId = event.dataTransfer.getData("text/plain");
-    const groupId = transferredId || draggedGroupId;
-    if (!groupId) return;
+    // Group ids are strings ("<PIC>::<ShortAddr>"). handleDragStart now
+    // sends a JSON array (one or more ids, for multi-select drag) — the
+    // plain-string fallback covers any drag that didn't go through
+    // handleDragStart's own encoding (shouldn't normally happen, but keeps
+    // this robust rather than silently doing nothing).
+    const transferredRaw = event.dataTransfer.getData("text/plain");
+    let groupIds;
+    try {
+      const parsed = JSON.parse(transferredRaw);
+      groupIds = Array.isArray(parsed) ? parsed : [String(parsed)];
+    } catch {
+      groupIds = transferredRaw ? [transferredRaw] : (draggedGroupId ? [draggedGroupId] : []);
+    }
+    if (groupIds.length === 0) return;
     const sourceDevice = draggedFromDevice; // which device's card it was dragged out of, if any
 
-    const group = groups.find((g) => g.id === groupId);
-    if (!group) {
+    const draggedGroups = groupIds.map((id) => groups.find((g) => g.id === id)).filter(Boolean);
+    if (draggedGroups.length === 0) {
       setDraggedGroupId(null);
       setDraggedFromDevice(null);
       setDragOverTarget(null);
       return;
     }
 
+    const realIds = groupIds.flatMap(resolveRealIds);
+    const label = draggedGroups.length > 1 ? `${draggedGroups.length} groups` : draggedGroups[0].code;
+
     if (targetDeviceName) {
       // Dropped on a device. Dragged from Unassigned → plain assign.
       // Dragged out of another device's card → MOVE (leaves that device),
       // same as picking a group up and setting it down somewhere else.
       setAssignments((prev) => {
-        let arr = prev[groupId] || [];
-        if (sourceDevice && sourceDevice !== targetDeviceName) arr = arr.filter((d) => d !== sourceDevice);
-        if (!arr.includes(targetDeviceName)) arr = [...arr, targetDeviceName];
-        return { ...prev, [groupId]: arr };
-      });
-      showToast(sourceDevice && sourceDevice !== targetDeviceName
-        ? `${group.code} moved to ${targetDeviceName}`
-        : `${group.code} assigned to ${targetDeviceName}`);
-    } else if (sourceDevice) {
-      // Dropped on Unassigned from a specific device's card — only leaves
-      // that one device (other devices sharing this group, if any, keep it).
-      setAssignments((prev) => {
         const next = { ...prev };
-        const remaining = (next[groupId] || []).filter((d) => d !== sourceDevice);
-        if (remaining.length > 0) next[groupId] = remaining;
-        else delete next[groupId];
+        realIds.forEach((id) => {
+          let arr = next[id] || [];
+          if (sourceDevice && sourceDevice !== targetDeviceName) arr = arr.filter((d) => d !== sourceDevice);
+          if (!arr.includes(targetDeviceName)) arr = [...arr, targetDeviceName];
+          next[id] = arr;
+        });
         return next;
       });
-      showToast(`${group.code} removed from ${sourceDevice}`);
+      showToast(sourceDevice && sourceDevice !== targetDeviceName
+        ? `${label} moved to ${targetDeviceName}`
+        : `${label} assigned to ${targetDeviceName}`);
+    } else if (sourceDevice) {
+      // Dropped on Unassigned from a specific device's card — only leaves
+      // that one device (other devices sharing a group, if any, keep it).
+      setAssignments((prev) => {
+        const next = { ...prev };
+        realIds.forEach((id) => {
+          const remaining = (next[id] || []).filter((d) => d !== sourceDevice);
+          if (remaining.length > 0) next[id] = remaining;
+          else delete next[id];
+        });
+        return next;
+      });
+      showToast(`${label} removed from ${sourceDevice}`);
     }
-    setSelectedIds((prev) => prev.filter((id) => id !== groupId));
+    setSelectedIds((prev) => prev.filter((id) => !groupIds.includes(id)));
 
     setDraggedGroupId(null);
     setDraggedFromDevice(null);
@@ -428,8 +528,10 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
     setAssignments((prev) => {
       const next = { ...prev };
       sourceGroups.forEach((g) => {
-        const arr = next[g.id] || [];
-        if (!arr.includes(toDevice)) next[g.id] = [...arr, toDevice];
+        resolveRealIds(g.id).forEach((id) => {
+          const arr = next[id] || [];
+          if (!arr.includes(toDevice)) next[id] = [...arr, toDevice];
+        });
       });
       return next;
     });
@@ -446,15 +548,47 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
     };
   };
 
+  // The real payload sendToHandheld posts — real pic+shortAddr pairs only
+  // (see realGroups above), never the bundled W_PC/W_SEQ/W_LINE/P display
+  // tiles. Extracted so sendDiff below can build the "new" side of the
+  // diff with the exact same logic used to actually send it.
+  const buildSendPayloadRows = () => (
+    [...realGroups, ...zoneBaseGroups.map((g) => ({ ...g, devices: assignments[g.id] || [] }))]
+      .filter((g) => g.devices.length > 0)
+      .flatMap((g) => g.devices.map((d) => ({ pic: g.pic, shortAddr: g.code, deviceId: d })))
+  );
+
+  // What a re-send would actually change, computed against serverAssignments
+  // (the true last-persisted state, not the live-editable one) — shown in
+  // the confirm dialog once a batch has been sent before, so a mistaken
+  // edit (e.g. a zone accidentally dragged off a device that's already
+  // mid-count) is visible BEFORE committing, not discovered after.
+  const sendDiff = useMemo(() => {
+    const rowKey = (r) => `${r.pic}::${r.shortAddr}::${r.deviceId}`;
+    const newRows = buildSendPayloadRows();
+    const oldRows = [...realGroups, ...zoneBaseGroups].flatMap((g) =>
+      (serverAssignments[g.id] || []).map((d) => ({ pic: g.pic, shortAddr: g.code, deviceId: d }))
+    );
+    const oldKeys = new Set(oldRows.map(rowKey));
+    const newKeys = new Set(newRows.map(rowKey));
+    return {
+      added: newRows.filter((r) => !oldKeys.has(rowKey(r))).length,
+      removed: oldRows.filter((r) => !newKeys.has(rowKey(r))).length,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [realGroups, zoneBaseGroups, assignments, serverAssignments]);
+
   const sendToHandheld = () => {
     setShowSendConfirm(false);
     setIsSending(true);
 
     const payload = {
       batchId: selectedBatchId,
-      assignments: groups
-        .filter((g) => g.devices.length > 0)
-        .flatMap((g) => g.devices.map((d) => ({ pic: g.pic, shortAddr: g.code, deviceId: d }))),
+      // realGroups, not groups — the payload must always be real
+      // pic+shortAddr pairs. groups can contain bundled W_PC/W_SEQ/W_LINE/P
+      // display tiles whose `code` is just the PIC name, not a real
+      // ShortAddr (see displayGroups above).
+      assignments: buildSendPayloadRows(),
     };
 
     fetch(`${API_BASE}/api/handheld-assign/device-assignments`, {
@@ -463,9 +597,14 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
       body: JSON.stringify(payload),
     })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Save failed"))))
-      .then(() => {
+      .then((result) => {
         setIsSending(false);
         setShowSendSuccess(true);
+        // The just-sent state IS now the persisted truth — update both so
+        // the next diff (if Send is clicked again) compares against this,
+        // not the state from before this send.
+        setServerAssignments(assignments);
+        setSentAt(result && result.sentAt ? result.sentAt : new Date().toISOString());
       })
       .catch((err) => {
         console.error("Failed to send assignment to handheld devices", err);
@@ -642,7 +781,7 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
             <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-ink text-[12px] font-black shadow-sm">{assignedPercent}%</div>
             <div>
               <p className="text-[9px] font-extrabold tracking-wide text-muted">REMAINING</p>
-              <p className="text-[15px] font-bold text-ink leading-none mt-1">{groups.filter((g) => g.devices.length === 0).length} groups</p>
+              <p className="text-[15px] font-bold text-ink leading-none mt-1">{unassignedGroupsAll.length} groups</p>
             </div>
           </div>
 
@@ -794,9 +933,11 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
                   <span className="text-[#C0BDB4] text-[12px] tracking-[-2px]">⠿</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-[12px] font-extrabold text-ink">{group.code}</p>
-                    {selectedPic === "All" && (
+                    {(selectedPic === "All" || group.isConsolidated) && (
                       <p className="text-[9px] text-muted font-semibold truncate">
-                        {group.pic}{group.isZone ? " · Zone" : ""}
+                        {group.isConsolidated
+                          ? `Bundled · ${group.memberIds.length} address group${group.memberIds.length > 1 ? "s" : ""}`
+                          : `${group.pic}${group.isZone ? " · Zone" : ""}`}
                       </p>
                     )}
                   </div>
@@ -907,7 +1048,8 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
                               <div className="flex-1 min-w-0">
                                 <p className="text-[12px] font-extrabold text-ink">{group.code}</p>
                                 <p className="text-[9.5px] text-muted font-semibold mt-0.5">
-                                  {group.isZone ? "Free Zone" : `${group.count} addresses`}{selectedPic === "All" ? ` · ${group.pic}` : ""}
+                                  {group.isZone ? "Free Zone" : `${group.count} addresses`}
+                                  {group.isConsolidated ? " · Bundled" : (selectedPic === "All" ? ` · ${group.pic}` : "")}
                                 </p>
                                 {otherDevices.length > 0 && (
                                   <p className="text-[8.5px] text-ink/50 font-semibold mt-0.5 truncate">
@@ -955,7 +1097,8 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
 
       {/* SEND TO HANDHELD / EXPORT UNASSIGNED */}
       {(assignedAddresses > 0 || unassignedGroupsAll.length > 0) && (
-        <div className="flex justify-center items-center gap-3 mt-7">
+        <div className="flex flex-col items-center gap-2.5 mt-7">
+          <div className="flex justify-center items-center gap-3">
           {assignedAddresses > 0 && (
             <button
               onClick={() => setShowSendConfirm(true)}
@@ -990,6 +1133,12 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
               </span>
               {isExporting ? "Exporting..." : `Export Unassigned (${unassignedGroupsAll.length})`}
             </button>
+          )}
+          </div>
+          {sentAt && (
+            <p className="text-[10px] text-muted font-semibold">
+              Last sent: {new Date(sentAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
+            </p>
           )}
         </div>
       )}
@@ -1082,11 +1231,33 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
               </svg>
             </div>
 
-            <h3 className="font-display text-[20px] font-bold text-ink">Are you sure?</h3>
+            <h3 className="font-display text-[20px] font-bold text-ink">
+              {sentAt ? "You've already sent this" : "Are you sure?"}
+            </h3>
 
             <p className="text-[11px] text-muted font-semibold leading-relaxed mt-2">
-              All assigned address groups will be sent to the handheld devices.
+              {sentAt
+                ? "Assignments for this batch were already sent to the handheld devices. Sending again will apply these changes:"
+                : "All assigned address groups will be sent to the handheld devices."}
             </p>
+
+            {sentAt && (
+              <div className="bg-[#FAFAF7] rounded-[16px] px-4 py-3 mt-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-muted font-bold">New</span>
+                  <span className="text-[11px] text-ink font-extrabold">+{sendDiff.added}</span>
+                </div>
+                <div className="flex justify-between items-center mt-2">
+                  <span className="text-[10px] text-muted font-bold">Removed</span>
+                  <span className="text-[11px] text-ink font-extrabold">−{sendDiff.removed}</span>
+                </div>
+                {sendDiff.removed > 0 && (
+                  <p className="text-[9.5px] text-red-500 font-semibold mt-2 leading-relaxed">
+                    A removed assignment can take a zone away from a device that's already mid-count. Make sure that's intended.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="bg-[#FAFAF7] rounded-[16px] px-4 py-3 mt-4">
               <div className="flex justify-between items-center">

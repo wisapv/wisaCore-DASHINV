@@ -429,6 +429,27 @@ async function initDB() {
     `);
   }
 
+  // INV12 (PIC 'P' — the AAP1/AAS1 exception carved out of W, see the Zone
+  // Assignment Rules backlog item) — additive, same idea as the order_no
+  // migration above. Existing rows just read inv_result_12 as its
+  // DEFAULT 0 until Process Stock is re-run for that batch, which is fine
+  // since this table is a pure computed cache (see its own table comment).
+  const processStockColumnsForInv12 = await db.all(`PRAGMA table_info(process_stock_results)`);
+  if (processStockColumnsForInv12.length > 0 && !processStockColumnsForInv12.some((col) => col.name === 'inv_result_12')) {
+    await db.exec(`ALTER TABLE process_stock_results ADD COLUMN inv_result_12 INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // handheld_sent_at on upload_batches — a persistent "last sent to
+  // devices" timestamp for Assign Handheld's own Send to Handheld button,
+  // so the UI can show "Last sent: ..." even after a refresh (previously
+  // there was only a one-time success popup, no way to tell from the page
+  // itself whether assignments had ever been sent). Additive, same idea as
+  // the other migrations here.
+  const uploadBatchesColumnsForSentAt = await db.all(`PRAGMA table_info(upload_batches)`);
+  if (uploadBatchesColumnsForSentAt.length > 0 && !uploadBatchesColumnsForSentAt.some((col) => col.name === 'handheld_sent_at')) {
+    await db.exec(`ALTER TABLE upload_batches ADD COLUMN handheld_sent_at TEXT`);
+  }
+
   // Same auto-migration approach for getsudo_master_parts — any new column
   // added here in the future just needs a line added below, never a manual
   // DROP TABLE. The very first version of this table used key0 as its

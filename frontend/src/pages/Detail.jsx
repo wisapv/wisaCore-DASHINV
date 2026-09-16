@@ -259,14 +259,14 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
 
     const exportRows = isFree
       ? sourceRows.map((r) => ({
-          Zone: r.zone, Dock: r.dock, 'Part No': r.partNo, 'Part Name': r.partName || '',
-          KBN: r.kbn, Qty: r.qty ?? '', Address: r.address, 'Total Box': r.totalBoxes ?? '',
-          'In List?': r.inBatchList ? 'In list' : 'Not in list',
+          Zone: r.zone, Dock: r.dock, Supplier: r.supplier || '', 'S.plant': r.splant || '', 'S.dock': r.sdock || '',
+          'Part No': r.partNo, 'Part Name': r.partName || '', KBN: r.kbn, Qty: r.qty ?? '',
+          'Total Box': r.totalBoxes ?? '', 'In List?': r.inBatchList ? 'In list' : 'Not in list',
         }))
       : sourceRows.map((r) => ({
-          Shop: r.shop, Dock: r.dock, 'Part No': r.partNo, 'Part Name': r.partName,
-          KBN: r.kbn, Address: r.address, Qty: r.qty ?? '', Box: r.box || '', Pcs: r.pcs || '',
-          Seq: r.seq || '', Order: r.order || 'N/A', 'Sum Stock': r.sumStock || 0, Status: r.status,
+          Shop: r.shop, Dock: r.dock, Supplier: r.supplier || '', 'S.plant': r.splant || '', 'S.dock': r.sdock || '',
+          'Part No': r.partNo, 'Part Name': r.partName, KBN: r.kbn, Qty: r.qty ?? '',
+          Box: r.box || '', Pcs: r.pcs || '', Seq: r.seq || '', Order: r.order || 'N/A', 'Sum Stock': r.sumStock || 0, Status: r.status,
         }));
 
     const worksheet = XLSX.utils.json_to_sheet(exportRows);
@@ -461,30 +461,34 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
                   <tr className="bg-ink">
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-accent">ZONE</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">DOCK</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">SUPPLIER</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">S.PLANT</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">S.DOCK</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">PART NO</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">PART NAME</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">KBN</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">QTY</th>
-                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">ADDRESS</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">TOTAL BOX</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">IN LIST?</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleFreeRows.length === 0 ? (
-                    <tr><td colSpan={9} className="py-14 text-center text-muted font-semibold">No Free Zone scans yet</td></tr>
+                    <tr><td colSpan={11} className="py-14 text-center text-muted font-semibold">No Free Zone scans yet</td></tr>
                   ) : (
                     visibleFreeRows.map((row, idx) => (
                       <tr key={idx} className={`border-t border-ink/5 border-l-4 ${row.inBatchList ? 'border-l-accent' : 'border-l-ink/[0.15]'}`}>
                         <td className="px-3.5 py-3.5 font-extrabold text-ink">{row.zone}</td>
                         <td className="px-3.5 py-3.5 font-bold text-ink">{row.dock}</td>
+                        <td className="px-3.5 py-3.5 font-bold text-ink">{row.supplier || '—'}</td>
+                        <td className="px-3.5 py-3.5 text-[#5C5A52] font-semibold">{row.splant || '—'}</td>
+                        <td className="px-3.5 py-3.5 text-[#5C5A52] font-semibold">{row.sdock || '—'}</td>
                         <td className="px-3.5 py-3.5 font-bold text-[#5C5A52]">{row.partNo}</td>
                         <td className="px-3.5 py-3.5 font-bold text-ink">{row.partName || '—'}</td>
                         <td className="px-3.5 py-3.5">
                           <span className="bg-accent text-ink font-extrabold px-2.5 py-0.5 rounded-lg text-[10.5px]">{row.kbn}</span>
                         </td>
                         <td className="px-3.5 py-3.5 font-bold text-ink">{row.qty ?? '—'}</td>
-                        <td className="px-3.5 py-3.5 text-[#5C5A52] font-semibold">{row.address}</td>
                         <td className="px-3.5 py-3.5 font-bold text-ink">{row.totalBoxes ?? '—'}</td>
                         <td className="px-3.5 py-3.5">
                           <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full ${row.inBatchList ? 'bg-accent text-ink' : 'bg-ink/[0.06] text-[#B5B2A8]'}`}>
@@ -574,10 +578,12 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
                   <tr className="bg-ink">
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-accent">SHOP</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">DOCK</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">SUPPLIER</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">S.PLANT</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">S.DOCK</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">PART NO</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">PART NAME</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">KBN</th>
-                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">ADDRESS</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">QTY</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">BOX</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">PCS</th>
@@ -590,7 +596,7 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
                 </thead>
                 <tbody>
                   {visibleRows.length === 0 ? (
-                    <tr><td colSpan={14} className="py-14 text-center text-muted font-semibold">No data</td></tr>
+                    <tr><td colSpan={16} className="py-14 text-center text-muted font-semibold">No data</td></tr>
                   ) : (
                     visibleRows.map((row, idx) => {
                       const s = statusStyle(row.status);
@@ -598,12 +604,14 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
                         <tr key={idx} className={`border-t border-ink/5 border-l-4 ${s.border}`}>
                           <td className="px-3.5 py-3.5 font-extrabold text-ink">Shop {row.shop}</td>
                           <td className="px-3.5 py-3.5 font-bold text-ink">{row.dock}</td>
+                          <td className="px-3.5 py-3.5 font-bold text-ink">{row.supplier || '—'}</td>
+                          <td className="px-3.5 py-3.5 text-[#5C5A52] font-semibold">{row.splant || '—'}</td>
+                          <td className="px-3.5 py-3.5 text-[#5C5A52] font-semibold">{row.sdock || '—'}</td>
                           <td className="px-3.5 py-3.5 font-bold text-[#5C5A52]">{row.partNo}</td>
                           <td className="px-3.5 py-3.5 font-bold text-ink">{row.partName}</td>
                           <td className="px-3.5 py-3.5">
                             <span className="bg-accent text-ink font-extrabold px-2.5 py-0.5 rounded-lg text-[10.5px]">{row.kbn}</span>
                           </td>
-                          <td className="px-3.5 py-3.5 text-[#5C5A52] font-semibold">{row.address}</td>
                           <td className="px-3.5 py-3.5 font-bold text-ink">{row.qty ?? '—'}</td>
                           <td className="px-3.5 py-3.5 font-bold text-ink">{row.box || '—'}</td>
                           <td className="px-3.5 py-3.5 font-bold text-ink">{row.pcs || '—'}</td>

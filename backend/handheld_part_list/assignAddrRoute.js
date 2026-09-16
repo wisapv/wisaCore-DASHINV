@@ -21,21 +21,39 @@ const evaluatePicAndShop = (addrStr, dock, supplier) => {
     const cleanAddr = addr.replace(/\s/g, '');
     const supl = supplier.trim().toUpperCase();
 
-    // 1. W
-    if (dock === 'SW' || dock === 'S9') return { pic: 'W', shop: 'W', shouldDup: true };
+    // 1. W — except AAP1/AAS1 supplier, which is carved out as its own PIC
+    // 'P' (Zone P_SEQ, routes to INV12) per the Zone Assignment Rules
+    // backlog item. The remaining W group still can't be told apart by
+    // address/supplier alone — see resolveWSubZone() below, which splits it
+    // into W_PC/W_SEQ/W_LINE once both the Kanban and Lineside address for
+    // the same entry are available (evaluatePicAndShop only ever sees one
+    // address at a time, so that split can't happen here).
+    if (dock === 'SW' || dock === 'S9') {
+        if (supl === 'AAP1' || supl === 'AAS1') return { pic: 'P', shop: 'W', shouldDup: true };
+        return { pic: 'W', shop: 'W', shouldDup: true };
+    }
     // 2. T
     if (dock === 'ST') return { pic: 'T', shop: 'T', shouldDup: true };
     // 3. K
     if (dock === 'SK') return { pic: 'K', shop: 'K', shouldDup: false };
 
     // 4. TTAT
+    // 'SS' address prefix only means TTAT (or its S4/TBAS exception) when
+    // Dock is specifically S6 — confirmed, unchanged. 'TUSHO' is different:
+    // it means TTAT no matter what Dock the row has (confirmed against a
+    // real case — Addr "TUSHO-  S6" was getting PIC='A' because its Dock
+    // wasn't S6, so the old code, which gated TUSHO behind dock==='S6'
+    // exactly like SS, never even checked it).
     if (dock === 'S6') {
         if (addr.startsWith('SS') && supl === 'TBAS') {
             return { pic: 'S4', shop: 'A', shouldDup: false };
         }
-        if (addr.startsWith('SS') || addr.startsWith('TUSHO')) {
+        if (addr.startsWith('SS')) {
             return { pic: 'TTAT', shop: 'TTAT', shouldDup: false };
         }
+    }
+    if (addr.startsWith('TUSHO')) {
+        return { pic: 'TTAT', shop: 'TTAT', shouldDup: false };
     }
 
     // 5. R
@@ -102,6 +120,18 @@ function createFinalRow({ address, picType, finalShop, isLineside = false, ppDoc
 // different parts, since two unrelated parts coincidentally sharing an
 // address is normal and must not be collapsed. Shared as-is by both Pass 1
 // (direct match) and Pass 2 (name-based fallback) below.
+// Zone Assignment Rules backlog item: PIC 'W' (dock SW/S9, minus the P
+// exception above) is one bucket for two/three physically different
+// sub-zones. The split is address-position-based and only decidable once
+// both the Kanban and Lineside address for the same entry are in hand —
+// confirmed against 5 real Lineside Address samples from the business
+// owner (only 'EC2RS- 01.' — 5th character 'S' after stripping spaces —
+// was W_SEQ; the other 4 were W_LINE).
+function resolveWSubZone(linesideAddrRaw) {
+    const clean = linesideAddrRaw.replace(/\s/g, '');
+    return clean[4] === 'S' ? 'W_SEQ' : 'W_LINE';
+}
+
 function buildPartRows(addrInfoList, { ppDock, ppSupplier, groupPrefix, source, p }) {
     const partRows = [];
     for (const addrInfo of addrInfoList) {
@@ -111,7 +141,10 @@ function buildPartRows(addrInfoList, { ppDock, ppSupplier, groupPrefix, source, 
         const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
 
         if (kanbanAddrRaw) {
-            partRows.push(createFinalRow({ address: kanbanAddrRaw, picType: kanbanEval.pic, finalShop: kanbanEval.shop, isLineside: false, ppDock, groupPrefix, source, p }));
+            // The Kanban-address row for a W entry is always W_PC — 'P' (the
+            // AAP1/AAS1 exception) passes through untouched.
+            const kanbanPic = kanbanEval.pic === 'W' ? 'W_PC' : kanbanEval.pic;
+            partRows.push(createFinalRow({ address: kanbanAddrRaw, picType: kanbanPic, finalShop: kanbanEval.shop, isLineside: false, ppDock, groupPrefix, source, p }));
         }
 
         // Only duplicate into a Lineside row when the group calls for it AND
@@ -120,7 +153,8 @@ function buildPartRows(addrInfoList, { ppDock, ppSupplier, groupPrefix, source, 
         // point counted twice.
         if (kanbanEval.shouldDup && linesideAddrRaw && linesideAddrRaw !== kanbanAddrRaw) {
             const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
-            partRows.push(createFinalRow({ address: linesideAddrRaw, picType: linesideEval.pic, finalShop: linesideEval.shop, isLineside: true, ppDock, groupPrefix, source, p }));
+            const linesidePic = linesideEval.pic === 'W' ? resolveWSubZone(linesideAddrRaw) : linesideEval.pic;
+            partRows.push(createFinalRow({ address: linesideAddrRaw, picType: linesidePic, finalShop: linesideEval.shop, isLineside: true, ppDock, groupPrefix, source, p }));
         }
     }
 
@@ -140,8 +174,20 @@ function buildPartRows(addrInfoList, { ppDock, ppSupplier, groupPrefix, source, 
 // dataRows here is whatever the client posts back (built from this route's
 // own blankOrTrim(...) preview data), so '' needs converting to null right
 // before it reaches json_to_sheet.
+//
+// Column order/labels for the exported file specifically — deliberately
+// separate from createFinalRow's own key order/casing (Shop, kbn, etc. stay
+// exactly as they are there since deviceAssignmentRoute.js reads them by
+// those exact names for real logic; this mapping only reshapes the copy
+// that goes into the spreadsheet).
+const HANDHELD_EXPORT_COLUMNS = [
+    ['Group', 'Group'], ['Shop', 'Shop'], ['Source', 'Source'], ['Dock', 'Dock'],
+    ['Supplier', 'Supplier'], ['S.plant', 'S.plant'], ['S.dock', 'S.dock'],
+    ['Part no.', 'Part no.'], ['Part name', 'Part name'], ['KBN', 'kbn'],
+    ["Q'ty", "Q'ty"], ['Addr', 'Addr'], ['ShortAddr', 'ShortAddr'], ['PIC', 'PIC'],
+];
 const toExcelRow = (row) => Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [key, toExcelCellValue(value)])
+    HANDHELD_EXPORT_COLUMNS.map(([exportKey, sourceKey]) => [exportKey, toExcelCellValue(row[sourceKey])])
 );
 
 const generateExcelBuffer = (dataRows) => {
@@ -194,6 +240,14 @@ async function handleProcessAssignAddr(req, res) {
         // last one parsed.
         const addrMap = new Map();
         const partNameAddrLookup = new Map();
+        // Last-resort fallback source, independent of resolvedByPartPrefix
+        // below: keyed by the ADDRESS MASTER ROW'S OWN Part No prefix (first
+        // 5 chars), built straight from the live (date-valid) rows here —
+        // unlike resolvedByPartPrefix, this doesn't require the donor part
+        // to have matched Target R/O + Part Procurement in this batch at
+        // all. Only reached in Pass 2 after every other fallback has
+        // already failed (see pendingFallback.forEach below).
+        const addrByPartPrefix = new Map();
 
         addrRaw.forEach(row => {
             const fromDate = parseExcelDate(getField(row, 'TC_FROM_UNL'));
@@ -216,7 +270,14 @@ async function handleProcessAssignAddr(req, res) {
                 if (!partNameAddrLookup.has(partNameKey)) partNameAddrLookup.set(partNameKey, []);
                 partNameAddrLookup.get(partNameKey).push(row);
             }
+
+            const addrPartPrefixKey = partNo.replace(/-/g, '').slice(0, 5);
+            if (addrPartPrefixKey) {
+                if (!addrByPartPrefix.has(addrPartPrefixKey)) addrByPartPrefix.set(addrPartPrefixKey, []);
+                addrByPartPrefix.get(addrPartPrefixKey).push(row);
+            }
         });
+
 
         const finalData = [];
         const holdData = [];
@@ -312,14 +373,23 @@ async function handleProcessAssignAddr(req, res) {
             if (addrInfoList.length > 0) {
                 finalData.push(...buildPartRows(addrInfoList, ctx));
 
-                if (partDescKey) {
-                    if (!resolvedByName.has(partDescKey)) resolvedByName.set(partDescKey, []);
-                    resolvedByName.get(partDescKey).push(...addrInfoList);
+                if (partDescKey && !resolvedByName.has(partDescKey)) {
+                    // Only remembers the FIRST address found for this part
+                    // name, and only its FIRST address entry — a fallback
+                    // part (no direct Address Master match of its own)
+                    // borrows just that one address, not every address
+                    // every direct-matched sibling under the same name
+                    // happens to have (which used to duplicate one row per
+                    // address when a name-group spanned several).
+                    resolvedByName.set(partDescKey, [addrInfoList[0]]);
                 }
 
-                if (partPrefixKey && directAddrMatch && directAddrMatch.length > 0) {
-                    if (!resolvedByPartPrefix.has(partPrefixKey)) resolvedByPartPrefix.set(partPrefixKey, []);
-                    resolvedByPartPrefix.get(partPrefixKey).push(...directAddrMatch);
+                if (partPrefixKey && directAddrMatch && directAddrMatch.length > 0 && !resolvedByPartPrefix.has(partPrefixKey)) {
+                    // Same fix as resolvedByName above, same reason: only
+                    // the FIRST address found for this part-number prefix
+                    // is remembered, not every address every direct-matched
+                    // part under that prefix happens to have.
+                    resolvedByPartPrefix.set(partPrefixKey, [directAddrMatch[0]]);
                 }
             } else {
                 pendingFallback.push(ctx);
@@ -342,7 +412,22 @@ async function handleProcessAssignAddr(req, res) {
                 return;
             }
 
-            // Still genuinely unresolved by all three passes: goes to Hold
+            // Fourth and last-resort fallback: borrow straight from live
+            // (date-valid) Address Master rows by part-number prefix, even
+            // when the donor part never matched Target R/O + Part
+            // Procurement in this batch at all — confirmed against a real
+            // case (58311KK03000 borrowing from 58311KK01000, which had no
+            // Target R/O row in this batch). Still just the first address
+            // found, same "one borrowed address, not every address" rule
+            // as the other fallbacks.
+            const rawAddrPrefixEntries = partPrefixKey ? (addrByPartPrefix.get(partPrefixKey) || []) : [];
+
+            if (rawAddrPrefixEntries.length > 0) {
+                finalData.push(...buildPartRows([rawAddrPrefixEntries[0]], ctx));
+                return;
+            }
+
+            // Still genuinely unresolved by all four passes: goes to Hold
             // exactly as before this task — no output row is added for it
             // here (that's a separate, deferred piece of work, out of scope
             // here).

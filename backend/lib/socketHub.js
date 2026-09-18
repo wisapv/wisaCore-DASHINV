@@ -28,6 +28,10 @@ const EVENTS = Object.freeze({
   BATCH_MERGE_UPDATED: 'batch:mergeUpdated',
   HANDHELD_UPDATED: 'handheld:updated',
   HANDHELD_DEVICES_UPDATED: 'handheld:devicesUpdated',
+  // Live "is this device still reachable" ping — see handleHeartbeat in
+  // deviceAssignmentRoute.js. Payload is { deviceId, batchId, ts } only;
+  // never written to the DB, purely a dashboard-liveness signal.
+  HANDHELD_HEARTBEAT: 'handheld:heartbeat',
   ZONE_DEFINITIONS_UPDATED: 'zone:definitionsUpdated',
 });
 

@@ -396,6 +396,11 @@ async function handleSubmitFreeZone(req, res) {
 // (wrong format, IMPORT parts — not decodable yet, see the design
 // discussion) are collected as failures instead of silently dropped, so
 // the device can show the person which scans didn't go through.
+// Free Zone "Send" — decodes each raw QR (see freeZoneQr.js) and appends
+// it as its own row (see handheld_free_zone_scans's own table comment for
+// why this is a plain INSERT, not an upsert): the same Kanban tag scanned
+// twice is two boxes counted, not a correction of the first scan, so
+// there is nothing here to conflict with and overwrite.
 async function handleSubmitFreeZoneQr(req, res) {
   try {
     const { batchId, deviceId, employeeName, qrCodes } = req.body;
@@ -418,15 +423,7 @@ async function handleSubmitFreeZoneQr(req, res) {
              (batch_id, order_number, part_no, box_seq, total_boxes, qty, dock, plant, supplier,
               s_plant, s_dock, arrival_date, arrival_time, lane_no, kbn, conveyance, address,
               raw_qr, device_id, employee_name, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (batch_id, order_number, part_no, box_seq) DO UPDATE SET
-             total_boxes = excluded.total_boxes, qty = excluded.qty, dock = excluded.dock,
-             plant = excluded.plant, supplier = excluded.supplier, s_plant = excluded.s_plant,
-             s_dock = excluded.s_dock, arrival_date = excluded.arrival_date,
-             arrival_time = excluded.arrival_time, lane_no = excluded.lane_no, kbn = excluded.kbn,
-             conveyance = excluded.conveyance, address = excluded.address, raw_qr = excluded.raw_qr,
-             device_id = excluded.device_id, employee_name = excluded.employee_name,
-             updated_at = excluded.updated_at`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             batchId, decoded.orderNumber, decoded.partNo, decoded.boxSeq, decoded.totalBoxes, decoded.qty,
             decoded.dock, decoded.plant, decoded.supplier, decoded.sPlant, decoded.sDock,
@@ -449,6 +446,106 @@ async function handleSubmitFreeZoneQr(req, res) {
   }
 }
 
+// Input Stock "Send"/"Not Found" — BULK variant, built for the Android
+// app's local-first sync (see SyncManager on the device side): every count
+// is written to the device's own local queue FIRST, then replayed here in
+// one request once the device has a connection. Same upsert semantics and
+// the exact same unique key as handleSubmitCount (batch_id, pic, short_addr,
+// addr, kbn) — a bulk call is just N of those in one round trip, not a
+// different write path.
+//
+// Deliberately NOT one big transaction: a bad/malformed row must never sink
+// the rest of the batch (mirrors handleSubmitFreeZoneQr's failures-array
+// approach) — each row is its own independent insert, `results` reports
+// success/failure per row so the device only clears the ones the server
+// actually confirmed and keeps retrying the rest.
+async function handleSubmitCountsBulk(req, res) {
+  try {
+    const { batchId, deviceId, counts } = req.body;
+    if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+    if (!Array.isArray(counts)) return res.status(400).json({ error: 'counts must be an array' });
+
+    const db = await connectDB();
+    const now = new Date().toISOString();
+    const results = []; // index-aligned with `counts`
+    let savedCount = 0;
+
+    for (const c of counts) {
+      if (!c || !c.pic || !c.shortAddr || !c.addr || !c.kbn) {
+        results.push({ success: false, error: 'Missing pic, shortAddr, addr, or kbn' });
+        continue;
+      }
+      try {
+        await db.run(
+          `INSERT INTO handheld_stock_counts
+             (batch_id, pic, short_addr, addr, kbn, part_no, part_name, supplier, shop, dock, s_plant, s_dock,
+              qty, box, pcs, seq, order_no, not_found, device_id, employee_name, employee_phone, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (batch_id, pic, short_addr, addr, kbn) DO UPDATE SET
+             part_no = excluded.part_no, part_name = excluded.part_name, supplier = excluded.supplier,
+             shop = excluded.shop, dock = excluded.dock, s_plant = excluded.s_plant, s_dock = excluded.s_dock,
+             qty = excluded.qty, box = excluded.box, pcs = excluded.pcs, seq = excluded.seq,
+             order_no = excluded.order_no, not_found = excluded.not_found, device_id = excluded.device_id,
+             employee_name = excluded.employee_name, employee_phone = excluded.employee_phone,
+             updated_at = excluded.updated_at`,
+          [
+            batchId, c.pic, c.shortAddr, c.addr, c.kbn, c.partNo || '', c.partName || '', c.supplier || '',
+            c.shop || '', c.dock || '', c.sPlant || '', c.sDock || '', c.qty ?? null, c.box || '', c.pcs || '',
+            c.seq || '', c.order || null, c.notFound ? 1 : 0, deviceId || '', c.employeeName || '', c.employeePhone || '', now,
+          ]
+        );
+        results.push({ success: true });
+        savedCount += 1;
+      } catch (err) {
+        results.push({ success: false, error: 'Failed to save row' });
+      }
+    }
+
+    if (savedCount > 0) emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
+    res.json({ success: true, savedCount, failedCount: counts.length - savedCount, results });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save counts (bulk)' });
+  }
+}
+
+// In-memory only — deliberately never touches the DB. This is a live "is the
+// device still reachable" signal, not real inventory data, so it's fine to
+// lose on a server restart. Keyed by deviceId; each ping just overwrites the
+// previous one (last-write-wins, no history kept).
+const heartbeats = new Map(); // deviceId -> { batchId, ts }
+
+// POST /api/handheld-assign/heartbeat — fire-and-forget ping from the
+// Android app while it's on the Fix Zone screen (see the real-time/offline-
+// badge design discussion). Broadcasts immediately over socket.io so the
+// dashboard updates live; also kept in `heartbeats` so a dashboard that
+// just loaded the page can fetch the current state via GET /heartbeats
+// instead of waiting for the next ping.
+async function handleHeartbeat(req, res) {
+  try {
+    const { deviceId, batchId } = req.body;
+    if (!deviceId) return res.status(400).json({ error: 'Missing deviceId' });
+
+    const ts = Date.now();
+    heartbeats.set(deviceId, { batchId: batchId || null, ts });
+    emitEvent(EVENTS.HANDHELD_HEARTBEAT, { deviceId, batchId: batchId || null, ts });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to record heartbeat' });
+  }
+}
+
+// GET /api/handheld-assign/heartbeats — snapshot of every device's last
+// ping, for the dashboard's initial load (socket events alone would leave
+// it blank until the next ping happens to arrive).
+function handleGetHeartbeats(req, res) {
+  const data = Array.from(heartbeats.entries()).map(([deviceId, v]) => ({
+    deviceId,
+    batchId: v.batchId,
+    lastSeen: v.ts,
+  }));
+  res.json({ data });
+}
+
 // GET /api/handheld-assign/free-zone-detail?batchId=X — the Free Zone view
 // on Stock Tracking Detail (see the Fix/Free toggle design discussion).
 // Every decoded scan, with which zone it belongs to (resolved the same way
@@ -462,8 +559,36 @@ async function handleGetFreeZoneDetail(req, res) {
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
 
     const db = await connectDB();
+    // GROUP BY (part_no, kbn, order_number) — each group is every scan of
+    // the SAME physical tag (see the design discussion on why the same
+    // tag can legitimately be scanned more than once: boxes stacked too
+    // deep to reach each one's own). qty here stays the per-box Quantity/
+    // Pack printed on the tag (MAX — every scan of the same tag prints the
+    // same qty, so this is really just "pick the one value"), COUNT(*)
+    // becomes "how many boxes were actually counted" (totalBoxes), and
+    // SUM(qty) is the real grand total in pieces (totalPcs) — three
+    // different numbers that used to get conflated into one QTY column.
     const scans = await db.all(
-      `SELECT * FROM handheld_free_zone_scans WHERE batch_id = ? ORDER BY updated_at DESC`,
+      `SELECT
+         part_no,
+         kbn,
+         order_number,
+         MAX(dock) AS dock,
+         MAX(supplier) AS supplier,
+         MAX(s_plant) AS s_plant,
+         MAX(s_dock) AS s_dock,
+         MAX(total_boxes) AS tag_total_boxes,
+         MAX(arrival_date) AS arrival_date,
+         MAX(address) AS address,
+         MAX(device_id) AS device_id,
+         MAX(qty) AS qty,
+         SUM(qty) AS total_pcs,
+         COUNT(*) AS counted_boxes,
+         MAX(updated_at) AS updated_at
+       FROM handheld_free_zone_scans
+       WHERE batch_id = ?
+       GROUP BY part_no, kbn, order_number
+       ORDER BY updated_at DESC`,
       batchId
     );
 
@@ -505,8 +630,10 @@ async function handleGetFreeZoneDetail(req, res) {
       sdock: s.s_dock,
       partNo: s.part_no,
       partName: partNameByNo[s.part_no] || '',
-      qty: s.qty,
-      totalBoxes: s.total_boxes,
+      qty: s.qty, // Quantity/Pack — the per-box qty printed on the tag itself, not a total
+      totalBoxes: s.counted_boxes, // how many times this tag was actually scanned — see the query comment above
+      totalPcs: s.total_pcs, // qty × totalBoxes — the real grand total in pieces
+      tagTotalBoxes: s.tag_total_boxes, // the Kanban label's own printed "N of M boxes" field, kept for reference — not what "Total Box" in the table means anymore
       orderNumber: s.order_number,
       arrivalDate: s.arrival_date,
       kbn: s.kbn,
@@ -976,6 +1103,9 @@ router.get('/overview', handleGetOverview);
 router.get('/detail', handleGetDetail);
 router.post('/submit-free-zone-qr', express.json({ limit: '5mb' }), handleSubmitFreeZoneQr);
 router.get('/free-zone-detail', handleGetFreeZoneDetail);
+router.post('/submit-counts-bulk', express.json({ limit: '5mb' }), handleSubmitCountsBulk);
+router.post('/heartbeat', express.json({ limit: '1mb' }), handleHeartbeat);
+router.get('/heartbeats', handleGetHeartbeats);
 
 module.exports = router;
 module.exports.handleGetAssignments = handleGetAssignments;
@@ -995,3 +1125,6 @@ module.exports.handleGetOverview = handleGetOverview;
 module.exports.handleGetDetail = handleGetDetail;
 module.exports.handleGetFreeZoneDetail = handleGetFreeZoneDetail;
 module.exports.handleLogCheckIn = handleLogCheckIn;
+module.exports.handleSubmitCountsBulk = handleSubmitCountsBulk;
+module.exports.handleHeartbeat = handleHeartbeat;
+module.exports.handleGetHeartbeats = handleGetHeartbeats;

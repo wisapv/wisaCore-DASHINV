@@ -208,11 +208,22 @@ async function initDB() {
     -- the earlier barcode+box_count model, which assumed a person typed
     -- the box count in manually. Now the whole QR encodes everything
     -- (Part No, Qty, Kbn, Address, etc.) so nothing needs typing — see the
-    -- Free Zone QR design discussion. Primary key is (order_number,
-    -- part_no, box_seq): the same physical box scanned twice by mistake
-    -- (or by two different devices) just overwrites the same row instead
-    -- of counting it again.
+    -- Free Zone QR design discussion.
+    --
+    -- Append-only (surrogate "id" key) — deliberately NOT keyed on
+    -- (batch_id, order_number, part_no, box_seq) anymore. That used to
+    -- upsert, collapsing a repeat scan of the identical Kanban tag into
+    -- one row — but Free Zone now deliberately allows scanning the same
+    -- reachable tag more than once to represent boxes stacked too deep to
+    -- reach each one's own tag (see the design discussion), so every scan
+    -- has to land as its own row or those extra boxes silently vanish.
+    -- order_number/part_no/box_seq stay as plain descriptive columns (what
+    -- the tag says), not a uniqueness constraint. See
+    -- migrateFreeZoneScansTable below for how an existing database moves
+    -- off the old composite key without losing any previously-collected
+    -- scans.
     CREATE TABLE IF NOT EXISTS handheld_free_zone_scans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       batch_id TEXT NOT NULL,
       order_number TEXT NOT NULL,
       part_no TEXT NOT NULL,
@@ -233,8 +244,7 @@ async function initDB() {
       raw_qr TEXT,
       device_id TEXT,
       employee_name TEXT,
-      updated_at TEXT,
-      PRIMARY KEY (batch_id, order_number, part_no, box_seq)
+      updated_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_getsudo_part_no ON getsudo_master_parts(part_no);
     -- LTBO1021 List Report import (see the RUN OUT Summary design discussion)
@@ -488,6 +498,59 @@ async function initDB() {
     if (!getsudoPartsColumns.some((col) => col.name === 'daily_usage')) {
       await db.exec(`ALTER TABLE getsudo_master_parts ADD COLUMN daily_usage TEXT`);
     }
+  }
+
+  // handheld_free_zone_scans used to key on (batch_id, order_number,
+  // part_no, box_seq) so a repeat scan upserted instead of adding a new
+  // row — that's now wrong on purpose (see the table's own comment above:
+  // Free Zone deliberately allows re-scanning the same reachable tag for
+  // boxes stacked too deep to reach each one's own). SQLite can't drop a
+  // primary key via ALTER TABLE, so rebuild under a surrogate `id` key,
+  // same approach as getsudo_master_parts above — every previously
+  // collected scan is carried over, nothing is lost.
+  const freeZoneScansColumns = await db.all(`PRAGMA table_info(handheld_free_zone_scans)`);
+  const freeZoneScansOrderNumberCol = freeZoneScansColumns.find((col) => col.name === 'order_number');
+  if (freeZoneScansOrderNumberCol && freeZoneScansOrderNumberCol.pk > 0) {
+    await db.exec(`ALTER TABLE handheld_free_zone_scans RENAME TO handheld_free_zone_scans_old`);
+    await db.exec(`
+      CREATE TABLE handheld_free_zone_scans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id TEXT NOT NULL,
+        order_number TEXT NOT NULL,
+        part_no TEXT NOT NULL,
+        box_seq INTEGER NOT NULL,
+        total_boxes INTEGER,
+        qty INTEGER,
+        dock TEXT,
+        plant TEXT,
+        supplier TEXT,
+        s_plant TEXT,
+        s_dock TEXT,
+        arrival_date TEXT,
+        arrival_time TEXT,
+        lane_no TEXT,
+        kbn TEXT,
+        conveyance TEXT,
+        address TEXT,
+        raw_qr TEXT,
+        device_id TEXT,
+        employee_name TEXT,
+        updated_at TEXT
+      )
+    `);
+    await db.exec(`
+      INSERT INTO handheld_free_zone_scans
+        (batch_id, order_number, part_no, box_seq, total_boxes, qty, dock, plant, supplier,
+         s_plant, s_dock, arrival_date, arrival_time, lane_no, kbn, conveyance, address,
+         raw_qr, device_id, employee_name, updated_at)
+      SELECT
+        batch_id, order_number, part_no, box_seq, total_boxes, qty, dock, plant, supplier,
+        s_plant, s_dock, arrival_date, arrival_time, lane_no, kbn, conveyance, address,
+        raw_qr, device_id, employee_name, updated_at
+      FROM handheld_free_zone_scans_old
+    `);
+    await db.exec(`DROP TABLE handheld_free_zone_scans_old`);
+    console.log('Migrated handheld_free_zone_scans off its old composite primary key.');
   }
 
   console.log("SQLite Database initialized with Batch System.");

@@ -10,6 +10,18 @@ function readStoredBatchId() {
   try { return localStorage.getItem(SELECTED_BATCH_STORAGE_KEY) || ''; } catch { return ''; }
 }
 
+// Which sub-tab (Fix Zone / Free Zone) was open — persisted the same way
+// as the batch selection above, so an accidental page refresh (or a
+// bookmark/shared link opened later) lands back where the person actually
+// was instead of always resetting to Fix Zone.
+const VIEW_STORAGE_KEY = 'wisa:detail:view';
+function readStoredView() {
+  try {
+    const v = localStorage.getItem(VIEW_STORAGE_KEY);
+    return v === 'Free' ? 'Free' : 'Fix'; // only two valid values — anything else falls back to the old default
+  } catch { return 'Fix'; }
+}
+
 const statusStyle = (status) => {
   if (status === 'Done') return { bg: 'bg-accent', text: 'text-ink', border: 'border-l-accent' };
   if (status === 'Not Found') return { bg: 'bg-red-100', text: 'text-red-600', border: 'border-l-red-400' };
@@ -20,6 +32,32 @@ const ROWS_LIMIT = 150;
 
 const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
   const [selectedBatchId, setSelectedBatchId] = useState(() => readStoredBatchId() || currentBatchId || '');
+  const [batchList, setBatchList] = useState([]);
+
+  // Persists a manual pick the same way AssignHandheld.jsx's own batch
+  // picker does — so "active" (is_active, server-wide) and "baseline"
+  // (is_baseline, only used for new-parts comparison) are never confused
+  // with "the batch I'm currently looking at here", which is its own,
+  // purely local choice.
+  useEffect(() => {
+    try { if (selectedBatchId) localStorage.setItem(SELECTED_BATCH_STORAGE_KEY, selectedBatchId); } catch { /* storage blocked — selection still works for this session */ }
+  }, [selectedBatchId]);
+
+  // Every batch that's ever existed (every TBOS upload — this never had a
+  // delete before the "Delete Batch" button on the Upload page, and even
+  // that only removes the ONE row picked there), not just the currently
+  // active one — a batch stops being "active" the moment a newer one is
+  // started, but its data is still real and still worth being able to
+  // open back up here. Setting a batch as Baseline (is_baseline) doesn't
+  // change what's "active" either — the two are unrelated flags — so
+  // without this list there was previously no way to view anything except
+  // whatever happened to be active right now.
+  useEffect(() => {
+    fetch(`${API_BASE}/api/batches/list`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows) => setBatchList(Array.isArray(rows) ? rows : []))
+      .catch((err) => console.error('Failed to load batch list', err));
+  }, []);
   // Adjusting state when a prop changes — done during render (not in an
   // effect) per React's own guidance, so it doesn't cause an extra
   // cascading re-render. currentBatchId can arrive after this component's
@@ -40,7 +78,11 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
   // Fix vs Free — two completely different data shapes (Fix is per-address
   // part-list rows; Free is per-scanned-box QR data with no address
   // matching), so they're separate views rather than one merged table.
-  const [view, setView] = useState('Fix');
+  const [view, setView] = useState(readStoredView);
+  const updateView = (next) => {
+    setView(next);
+    try { localStorage.setItem(VIEW_STORAGE_KEY, next); } catch { /* ignore — worst case it just resets on refresh again */ }
+  };
   const [freeRows, setFreeRows] = useState([]);
   const [isFreeLoading, setIsFreeLoading] = useState(true);
   const [freeLoadError, setFreeLoadError] = useState('');
@@ -261,7 +303,7 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
       ? sourceRows.map((r) => ({
           Zone: r.zone, Dock: r.dock, Supplier: r.supplier || '', 'S.plant': r.splant || '', 'S.dock': r.sdock || '',
           'Part No': r.partNo, 'Part Name': r.partName || '', KBN: r.kbn, Qty: r.qty ?? '',
-          'Total Box': r.totalBoxes ?? '', 'In List?': r.inBatchList ? 'In list' : 'Not in list',
+          'Total Box': r.totalBoxes ?? '', 'Total Pcs': r.totalPcs ?? '', 'In List?': r.inBatchList ? 'In list' : 'Not in list',
         }))
       : sourceRows.map((r) => ({
           Shop: r.shop, Dock: r.dock, Supplier: r.supplier || '', 'S.plant': r.splant || '', 'S.dock': r.sdock || '',
@@ -329,10 +371,22 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
         <select
           value={selectedBatchId}
           onChange={(e) => setSelectedBatchId(e.target.value)}
-          className="ml-auto bg-white border border-ink/10 rounded-xl px-3 py-2 text-[11px] font-bold text-ink outline-none shadow-sm"
+          className="ml-auto bg-white border border-ink/10 rounded-xl px-3 py-2 text-[11px] font-bold text-ink outline-none shadow-sm max-w-[220px]"
         >
           {!selectedBatchId && <option value="">Select a batch…</option>}
-          {selectedBatchId && <option value={selectedBatchId}>{selectedBatchId}</option>}
+          {/* selectedBatchId might not be in batchList yet (e.g. batchList
+              hasn't loaded, or this id came from localStorage/currentBatchId
+              and isn't in the fetched list for some reason) — always render
+              it as an option too, so the <select> never shows a blank value
+              silently reverting to nothing. */}
+          {selectedBatchId && !batchList.some((b) => b.batch_id === selectedBatchId) && (
+            <option value={selectedBatchId}>{selectedBatchId}</option>
+          )}
+          {batchList.map((b) => (
+            <option key={b.batch_id} value={b.batch_id}>
+              {b.batch_id}{b.batch_id === currentBatchId ? ' (active)' : ''}{b.is_baseline ? ' (baseline)' : ''}
+            </option>
+          ))}
         </select>
       </div>
 
@@ -342,7 +396,7 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
             {['Fix', 'Free'].map((v) => (
               <button
                 key={v}
-                onClick={() => setView(v)}
+                onClick={() => updateView(v)}
                 className={`flex items-center gap-2 px-4 py-3 font-bold text-sm transition-all border-b-2 ${
                   view === v ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'
                 }`}
@@ -469,12 +523,13 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">KBN</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">QTY</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">TOTAL BOX</th>
+                    <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">TOTAL PCS</th>
                     <th className="px-3.5 py-4 text-[9px] font-extrabold tracking-wider text-white">IN LIST?</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleFreeRows.length === 0 ? (
-                    <tr><td colSpan={11} className="py-14 text-center text-muted font-semibold">No Free Zone scans yet</td></tr>
+                    <tr><td colSpan={12} className="py-14 text-center text-muted font-semibold">No Free Zone scans yet</td></tr>
                   ) : (
                     visibleFreeRows.map((row, idx) => (
                       <tr key={idx} className={`border-t border-ink/5 border-l-4 ${row.inBatchList ? 'border-l-accent' : 'border-l-ink/[0.15]'}`}>
@@ -490,6 +545,7 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
                         </td>
                         <td className="px-3.5 py-3.5 font-bold text-ink">{row.qty ?? '—'}</td>
                         <td className="px-3.5 py-3.5 font-bold text-ink">{row.totalBoxes ?? '—'}</td>
+                        <td className="px-3.5 py-3.5 font-bold text-ink">{row.totalPcs ?? '—'}</td>
                         <td className="px-3.5 py-3.5">
                           <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full ${row.inBatchList ? 'bg-accent text-ink' : 'bg-ink/[0.06] text-[#B5B2A8]'}`}>
                             {row.inBatchList ? 'In list' : 'Not in list'}

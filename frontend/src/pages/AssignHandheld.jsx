@@ -35,6 +35,30 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
   const [selectedBatchId, setSelectedBatchId] = useState(() => readStoredBatchId() || currentBatchId || "");
   const [userPickedBatch, setUserPickedBatch] = useState(() => Boolean(readStoredBatchId()));
   const [batchList, setBatchList] = useState([]);
+  const [isActivating, setIsActivating] = useState(false);
+  const [activateError, setActivateError] = useState("");
+
+  // Makes selectedBatchId (whatever this page happens to be managing) the
+  // one handheld check-in actually recognizes (is_active — see My Work
+  // Modes) — see the "Set Active" button's own comment for why this
+  // exists: without it, a batch fully assigned here could sit invisible to
+  // every device forever. currentBatchId itself updates via the
+  // batch:changed socket event the backend emits on success (see
+  // useActiveBatch), not a local state write — every tab watching it
+  // (this one, Detail, Overview) picks the change up the same way.
+  const activateSelectedBatch = async () => {
+    if (!selectedBatchId || isActivating) return;
+    setIsActivating(true);
+    setActivateError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/batches/${encodeURIComponent(selectedBatchId)}/activate`, { method: "POST" });
+      if (!res.ok) { setActivateError("Failed to set active. Try again."); return; }
+    } catch {
+      setActivateError("Could not reach the server.");
+    } finally {
+      setIsActivating(false);
+    }
+  };
 
   // Every place selectedBatchId can change (manual pick, requestedBatchId
   // from Getsudo, the currentBatchId sync below) funnels through this one
@@ -710,24 +734,47 @@ const AssignHandheld = ({ currentBatchId, requestedBatchId, setUploadTab, subscr
 
         <div className="flex flex-col items-end gap-1.5">
           <p className="text-[9px] font-extrabold tracking-wide text-muted">MANAGING BATCH</p>
-          <select
-            value={selectedBatchId}
-            onChange={(e) => { setSelectedBatchId(e.target.value); setUserPickedBatch(true); }}
-            className={`bg-white border rounded-xl px-3 py-2 text-[11px] font-bold outline-none shadow-sm max-w-[240px] ${
-              selectedBatchId ? "border-ink/10 text-ink" : "border-accent/60 text-muted animate-pulse"
-            }`}
-          >
-            {!selectedBatchId && <option value="">Select a batch…</option>}
-            {selectedBatchId && !batchList.some((b) => b.batch_id === selectedBatchId) && (
-              <option value={selectedBatchId}>{selectedBatchId}</option>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedBatchId}
+              onChange={(e) => { setSelectedBatchId(e.target.value); setUserPickedBatch(true); }}
+              className={`bg-white border rounded-xl px-3 py-2 text-[11px] font-bold outline-none shadow-sm max-w-[240px] ${
+                selectedBatchId ? "border-ink/10 text-ink" : "border-accent/60 text-muted animate-pulse"
+              }`}
+            >
+              {!selectedBatchId && <option value="">Select a batch…</option>}
+              {selectedBatchId && !batchList.some((b) => b.batch_id === selectedBatchId) && (
+                <option value={selectedBatchId}>{selectedBatchId}</option>
+              )}
+              {visibleBatchOptions.map((b) => (
+                <option key={b.batch_id} value={b.batch_id}>
+                  {b.batch_id.startsWith("GETSUDO") ? `[Getsudo] ${b.batch_id}` : b.batch_id}
+                  {b.batch_id === currentBatchId ? " (current)" : ""}
+                </option>
+              ))}
+            </select>
+            {/* Only for TBOS batches — Getsudo has its own separate
+                is_getsudo_active flag/flow (see setGetsudoActiveBatch),
+                this button only ever touches TBOS's is_active. Shown only
+                when it would actually change something: a batch you're
+                managing here that ISN'T the one the handheld's own
+                check-in recognizes (My Work Modes only ever looks at
+                is_active) — that mismatch is exactly what makes "Send to
+                Handheld" report success while the device still sees 0
+                jobs, see the design discussion. */}
+            {selectedBatchId && !selectedBatchId.startsWith("GETSUDO") && selectedBatchId !== currentBatchId && (
+              <button
+                type="button"
+                onClick={activateSelectedBatch}
+                disabled={isActivating}
+                className="bg-ink text-accent rounded-xl px-3 py-2 text-[10.5px] font-bold whitespace-nowrap disabled:opacity-50"
+                title="Make this the batch handheld check-in recognizes"
+              >
+                {isActivating ? "Setting..." : "Set Active"}
+              </button>
             )}
-            {visibleBatchOptions.map((b) => (
-              <option key={b.batch_id} value={b.batch_id}>
-                {b.batch_id.startsWith("GETSUDO") ? `[Getsudo] ${b.batch_id}` : b.batch_id}
-                {b.batch_id === currentBatchId ? " (current)" : ""}
-              </option>
-            ))}
-          </select>
+          </div>
+          {activateError && <p className="text-[9px] font-semibold text-red-600">{activateError}</p>}
         </div>
       </div>
 

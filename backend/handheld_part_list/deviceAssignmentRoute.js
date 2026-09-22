@@ -2,8 +2,9 @@ const express = require('express');
 const { connectDB } = require('../database');
 const { getHandheldResults } = require('../lib/handheldResults');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
-const { decodeLocalFreeZoneQr } = require('../lib/freeZoneQr');
+const { decodeLocalFreeZoneQr, decodeBarePartNo } = require('../lib/freeZoneQr');
 const { getActiveBatchId } = require('../lib/batches');
+const { buildMatchKey } = require('../lib/keyUtils');
 
 const router = express.Router();
 
@@ -316,7 +317,7 @@ async function handleSubmitCount(req, res) {
     const {
       batchId, deviceId, pic, shortAddr, addr, kbn,
       partNo, partName, supplier, shop, dock, sPlant, sDock,
-      qty, box, pcs, seq, order, notFound, employeeName, employeePhone,
+      qty, qtyPerBox, box, pcs, seq, order, notFound, employeeName, employeePhone,
     } = req.body;
 
     if (!batchId || !pic || !shortAddr || !addr || !kbn) {
@@ -329,18 +330,18 @@ async function handleSubmitCount(req, res) {
     await db.run(
       `INSERT INTO handheld_stock_counts
          (batch_id, pic, short_addr, addr, kbn, part_no, part_name, supplier, shop, dock, s_plant, s_dock,
-          qty, box, pcs, seq, order_no, not_found, device_id, employee_name, employee_phone, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          qty, qty_per_box, box, pcs, seq, order_no, not_found, device_id, employee_name, employee_phone, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (batch_id, pic, short_addr, addr, kbn) DO UPDATE SET
          part_no = excluded.part_no, part_name = excluded.part_name, supplier = excluded.supplier,
          shop = excluded.shop, dock = excluded.dock, s_plant = excluded.s_plant, s_dock = excluded.s_dock,
-         qty = excluded.qty, box = excluded.box, pcs = excluded.pcs, seq = excluded.seq,
+         qty = excluded.qty, qty_per_box = excluded.qty_per_box, box = excluded.box, pcs = excluded.pcs, seq = excluded.seq,
          order_no = excluded.order_no, not_found = excluded.not_found, device_id = excluded.device_id,
          employee_name = excluded.employee_name, employee_phone = excluded.employee_phone,
          updated_at = excluded.updated_at`,
       [
         batchId, pic, shortAddr, addr, kbn, partNo || '', partName || '', supplier || '', shop || '',
-        dock || '', sPlant || '', sDock || '', qty ?? null, box || '', pcs || '', seq || '', order || null,
+        dock || '', sPlant || '', sDock || '', qty ?? null, qtyPerBox ?? null, box || '', pcs || '', seq || '', order || null,
         notFound ? 1 : 0, deviceId || '', employeeName || '', employeePhone || '', now,
       ]
     );
@@ -397,10 +398,39 @@ async function handleSubmitFreeZone(req, res) {
 // discussion) are collected as failures instead of silently dropped, so
 // the device can show the person which scans didn't go through.
 // Free Zone "Send" — decodes each raw QR (see freeZoneQr.js) and appends
-// it as its own row (see handheld_free_zone_scans's own table comment for
-// why this is a plain INSERT, not an upsert): the same Kanban tag scanned
-// twice is two boxes counted, not a correction of the first scan, so
-// there is nothing here to conflict with and overwrite.
+// Two families of tag get decoded here:
+//   - Kanban tags (Normal/Emergency/Sequential orders) — decodeLocalFreeZoneQr,
+//     everything (Qty, Order No., dates, etc.) comes straight from the tag.
+//   - Import Part / Special Order — decodeBarePartNo, just a Part No. with
+//     nothing else encoded. Qty/Pack (and every other basic field — Part
+//     Name, Supplier, Dock, KBN) isn't on the tag at all here, so it's
+//     looked up from the SAME assigned part list Fix Zone itself uses
+//     (handheld_results.finalData, built by process-assign-addr — see
+//     lookupPartFromAssignedList below) rather than re-querying raw Part
+//     Procurement directly. That list is already deduped and filtered to
+//     currently-valid rows (see createFinalRow/buildPpIndex), so reusing it
+//     avoids quietly matching an expired or superseded Part Procurement
+//     row a fresh query wouldn't know to exclude. A Part No. that isn't in
+//     that list at all fails with a clear reason rather than guessing.
+async function lookupPartFromAssignedList(db, batchId, partNo) {
+  const results = await getHandheldResults(db, batchId);
+  if (!results) return null;
+  const targetKey = buildMatchKey(partNo);
+  const row = results.finalData.find((r) => buildMatchKey(r['Part no.']) === targetKey);
+  if (!row) return null;
+
+  const qty = parseInt(row["Q'ty"], 10);
+  return {
+    qtyPerBox: Number.isNaN(qty) ? null : qty,
+    partName: row['Part name'] || '',
+    supplier: row['Supplier'] || '',
+    dock: row['Dock'] || '',
+    sPlant: row['S.plant'] || '',
+    sDock: row['S.dock'] || '',
+    kbn: row['kbn'] || '',
+  };
+}
+
 async function handleSubmitFreeZoneQr(req, res) {
   try {
     const { batchId, deviceId, employeeName, qrCodes } = req.body;
@@ -416,8 +446,36 @@ async function handleSubmitFreeZoneQr(req, res) {
     try {
       for (const raw of qrCodes) {
         const decoded = decodeLocalFreeZoneQr(raw);
-        if (!decoded.ok) { failures.push({ raw, error: decoded.error }); continue; }
+        if (decoded.ok) {
+          await db.run(
+            `INSERT INTO handheld_free_zone_scans
+               (batch_id, order_number, part_no, box_seq, total_boxes, qty, dock, plant, supplier,
+                s_plant, s_dock, arrival_date, arrival_time, lane_no, kbn, conveyance, address,
+                raw_qr, device_id, employee_name, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              batchId, decoded.orderNumber, decoded.partNo, decoded.boxSeq, decoded.totalBoxes, decoded.qty,
+              decoded.dock, decoded.plant, decoded.supplier, decoded.sPlant, decoded.sDock,
+              decoded.arrivalDate, decoded.arrivalTime, decoded.laneNo, decoded.kbn, decoded.conveyance,
+              decoded.address, decoded.raw, deviceId, employeeName || '', now,
+            ]
+          );
+          savedCount += 1;
+          continue;
+        }
 
+        const bare = decodeBarePartNo(raw);
+        if (!bare.ok) { failures.push({ raw, error: decoded.error }); continue; }
+
+        const partInfo = await lookupPartFromAssignedList(db, batchId, bare.partNo);
+        if (!partInfo || partInfo.qtyPerBox === null) {
+          failures.push({ raw, error: `Part No. "${bare.partNo}" not found in the assigned part list — Qty/Pack unknown` });
+          continue;
+        }
+
+        // No Order No./box-of-total/dates on these tags at all — every
+        // scan is simply "one more box of this part", same as a Kanban
+        // tag's own boxSeq/totalBoxes would read for a single-box order.
         await db.run(
           `INSERT INTO handheld_free_zone_scans
              (batch_id, order_number, part_no, box_seq, total_boxes, qty, dock, plant, supplier,
@@ -425,10 +483,9 @@ async function handleSubmitFreeZoneQr(req, res) {
               raw_qr, device_id, employee_name, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            batchId, decoded.orderNumber, decoded.partNo, decoded.boxSeq, decoded.totalBoxes, decoded.qty,
-            decoded.dock, decoded.plant, decoded.supplier, decoded.sPlant, decoded.sDock,
-            decoded.arrivalDate, decoded.arrivalTime, decoded.laneNo, decoded.kbn, decoded.conveyance,
-            decoded.address, decoded.raw, deviceId, employeeName || '', now,
+            batchId, bare.orderType === 'import' ? 'IMPORT' : 'SPECIAL', bare.partNo, 1, 1, partInfo.qtyPerBox,
+            partInfo.dock, '', partInfo.supplier, partInfo.sPlant, partInfo.sDock, '', '', '', partInfo.kbn, '', '',
+            bare.raw, deviceId, employeeName || '', now,
           ]
         );
         savedCount += 1;
@@ -479,18 +536,18 @@ async function handleSubmitCountsBulk(req, res) {
         await db.run(
           `INSERT INTO handheld_stock_counts
              (batch_id, pic, short_addr, addr, kbn, part_no, part_name, supplier, shop, dock, s_plant, s_dock,
-              qty, box, pcs, seq, order_no, not_found, device_id, employee_name, employee_phone, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              qty, qty_per_box, box, pcs, seq, order_no, not_found, device_id, employee_name, employee_phone, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (batch_id, pic, short_addr, addr, kbn) DO UPDATE SET
              part_no = excluded.part_no, part_name = excluded.part_name, supplier = excluded.supplier,
              shop = excluded.shop, dock = excluded.dock, s_plant = excluded.s_plant, s_dock = excluded.s_dock,
-             qty = excluded.qty, box = excluded.box, pcs = excluded.pcs, seq = excluded.seq,
+             qty = excluded.qty, qty_per_box = excluded.qty_per_box, box = excluded.box, pcs = excluded.pcs, seq = excluded.seq,
              order_no = excluded.order_no, not_found = excluded.not_found, device_id = excluded.device_id,
              employee_name = excluded.employee_name, employee_phone = excluded.employee_phone,
              updated_at = excluded.updated_at`,
           [
             batchId, c.pic, c.shortAddr, c.addr, c.kbn, c.partNo || '', c.partName || '', c.supplier || '',
-            c.shop || '', c.dock || '', c.sPlant || '', c.sDock || '', c.qty ?? null, c.box || '', c.pcs || '',
+            c.shop || '', c.dock || '', c.sPlant || '', c.sDock || '', c.qty ?? null, c.qtyPerBox ?? null, c.box || '', c.pcs || '',
             c.seq || '', c.order || null, c.notFound ? 1 : 0, deviceId || '', c.employeeName || '', c.employeePhone || '', now,
           ]
         );
@@ -1031,7 +1088,7 @@ async function handleGetDetail(req, res) {
     const finalData = results ? results.finalData : [];
 
     const countRows = await db.all(
-      `SELECT pic, short_addr, addr, kbn, part_no, qty, box, pcs, seq, order_no, not_found
+      `SELECT pic, short_addr, addr, kbn, part_no, qty, qty_per_box, box, pcs, seq, order_no, not_found
        FROM handheld_stock_counts WHERE batch_id = ?`,
       batchId
     );
@@ -1069,7 +1126,7 @@ async function handleGetDetail(req, res) {
         partName: row['Part name'] || '',
         kbn: row.kbn || '',
         address: row.Addr || '',
-        qty: counted ? counted.qty : null,
+        qty: counted ? counted.qty_per_box : null, // Quantity/Pack from the tag — NOT the box×qty+pcs total (see qty_per_box's own comment in database.js); SUM STOCK below still uses the real total
         box: counted ? counted.box : '',
         pcs: counted ? counted.pcs : '',
         seq: counted ? counted.seq : '',

@@ -33,6 +33,31 @@ const ROWS_LIMIT = 150;
 const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
   const [selectedBatchId, setSelectedBatchId] = useState(() => readStoredBatchId() || currentBatchId || '');
   const [batchList, setBatchList] = useState([]);
+  const [isActivating, setIsActivating] = useState(false);
+  const [activateError, setActivateError] = useState('');
+
+  // Makes selectedBatchId (whichever batch this page happens to be
+  // viewing) the one handheld check-in actually recognizes (is_active —
+  // My Work Modes only ever looks at that flag). Without this, "Send to
+  // Handheld" on the Assign page can report success while the device
+  // still sees 0 jobs, because the save and the device's own lookup are
+  // keyed off two different things — see the design discussion. currentBatchId
+  // itself updates via the batch:changed socket event the backend emits on
+  // success (see useActiveBatch), not a local write here.
+  const activateSelectedBatch = async () => {
+    if (!selectedBatchId || isActivating) return;
+    setIsActivating(true);
+    setActivateError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/batches/${encodeURIComponent(selectedBatchId)}/activate`, { method: 'POST' });
+      if (!res.ok) { setActivateError('Failed to set active. Try again.'); return; }
+    } catch {
+      setActivateError('Could not reach the server.');
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
 
   // Persists a manual pick the same way AssignHandheld.jsx's own batch
   // picker does — so "active" (is_active, server-wide) and "baseline"
@@ -169,6 +194,15 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
     setIsSaving(true);
     setSaveError('');
     try {
+      // editingRow.qty is Quantity/Pack now (see the qty_per_box design
+      // discussion), not the total — this modal edits Box/Pcs, so the real
+      // total has to be recomputed from them (same formula the handheld
+      // app itself uses: Box × Qty-per-Box + Pcs) rather than resent
+      // as-is, or it'd silently overwrite the correct total with the
+      // per-box number.
+      const qtyPerBox = Number(editingRow.qty) || 0;
+      const boxNum = Number(editForm.box) || 0;
+      const pcsNum = Number(editForm.pcs) || 0;
       const res = await fetch(`${API_BASE}/api/handheld-assign/submit-count`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -182,7 +216,8 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
           dock: editingRow.dock,
           partNo: editingRow.partNo,
           partName: editingRow.partName,
-          qty: editingRow.qty, // unchanged — this modal only edits box/pcs/seq/order
+          qty: boxNum * qtyPerBox + pcsNum,
+          qtyPerBox,
           box: editForm.box,
           pcs: editForm.pcs,
           seq: editForm.seq,
@@ -388,7 +423,22 @@ const Detail = ({ currentBatchId, subscribeToEvent, onGoToSummary }) => {
             </option>
           ))}
         </select>
+        {/* Only when it would actually change something — viewing a batch
+            here that handheld check-in doesn't recognize as active (see
+            activateSelectedBatch's own comment). */}
+        {selectedBatchId && selectedBatchId !== currentBatchId && !selectedBatchId.startsWith('GETSUDO') && (
+          <button
+            type="button"
+            onClick={activateSelectedBatch}
+            disabled={isActivating}
+            className="bg-ink text-accent rounded-xl px-3 py-2 text-[10.5px] font-bold whitespace-nowrap disabled:opacity-50"
+            title="Make this the batch handheld check-in recognizes"
+          >
+            {isActivating ? 'Setting...' : 'Set Active'}
+          </button>
+        )}
       </div>
+      {activateError && <p className="text-[9px] font-semibold text-red-600 text-right -mt-3">{activateError}</p>}
 
       {selectedBatchId && (
         <div className="flex items-center justify-between gap-3 border-b border-ink/10 -mb-1">

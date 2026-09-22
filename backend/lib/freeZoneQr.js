@@ -1,126 +1,91 @@
-// Decodes the fixed-width QR string scanned in a Free Zone (LOCAL parts
-// only — IMPORT uses a different layout that hasn't been specified yet,
-// see the Free Zone / NQC Master design discussion). Every field's exact
-// character width was verified against a real sample:
+// Decodes the fixed-width QR string scanned in a Free Zone. This layout is
+// shared by every "Kanban tag" order type — Normal, Emergency, and
+// Sequential all use the exact same byte offsets, they just differ in what
+// ends up in each field (e.g. Order No. can contain letters for Emergency/
+// Sequential, MROS Lane reads as the literal "0-" when not applicable).
+// Import Part and Special Order are a DIFFERENT, much shorter format (just
+// a bare Part No., no order/qty/box/date encoded at all) — see
+// decodeImportOrSpecialPart below, not handled by this function.
 //
-//   SS12026090301 335040K270C00001/00020000028DAIWGD3 03/09/202609:4011A610ASD - R03
+// Field layout (1-indexed character positions, as given — converted to
+// 0-indexed slices below), confirmed against real samples of all three
+// order types:
+//   1        Plant (always "S" = Samrong)
+//   2-3      Dock
+//   4-15     Order No. (12 chars — CAN contain letters, e.g. an "E1"
+//            emergency suffix or a sequential order's own lettering;
+//            space-padded on the right when shorter, never assume digits-only)
+//   16-27    Part No. (12 chars)
+//   28-36    Box Seq / Total Boxes ("0001/0002" — 9 chars, "/" included)
+//   37-43    Qty per box (7 digits)
+//   44-47    Supplier
+//   48       S.Plant
+//   49-50    S.Dock
+//   51       (blank separator)
+//   52-66    Arrival Date & Time (15 chars — "DD/MM/YYYY" + "HH:MM" back to back, no separator)
+//   67-68    MROS No. (Lane) — 2 chars; literally "0-" when not applicable, not just absent
+//   69-72    KBN
+//   73       Conveyance
+//   74-83    Address
 //
-// which decodes to Plant=S, Dock=S1, Order=2026090301, PartNo=335040K270C0,
-// BoxSeq/Total=0001/0002 (this is box 1 of 2 for that order), Qty=28,
-// Supplier=DAIW, S.plant=G, S.dock=D3, ArrivalDate=03/09/2026,
-// ArrivalTime=09:40, LaneNo=11, Kbn=A610, Conveyance=A, Address="SD - R03".
-//
-// IMPORTANT — Part No. is NOT a fixed 12 characters. Real scans off a
-// printed Kanban label showed the gap between Order Number and Part No.
-// can be 1 OR 2 blank characters (some orders reserve a short suffix
-// there, blank-padded when unused) — a strict fixed-offset read misreads
-// this entirely, shifting Box Seq/Qty/Supplier/etc. by one character and
-// rejecting an otherwise perfectly valid scan. Confirmed against 3 real
-// samples (one verified against the physical printed label itself):
-//
-//   SS12026013006  126010E010000001/000500000061PITAI1 30/01/202607:3011A001IFN4  - R00
-//   SS12026091601  445400KD60000001/00010000006ADVSIE1 16/09/202603:0002M164EIP1  - C01
-//
-// Every OTHER field here genuinely is fixed-width (confirmed against all
-// samples above), so instead of assuming Part No.'s width, anchor on the
-// "/" that always immediately follows Box Seq (Box Seq is always exactly
-// 4 digits) and take everything between the order-number separator and
-// those 4 digits as Part No., trimmed of whatever leftover padding lands
-// in it, however long it actually is:
-//
-//   plant(1) dock(2) orderNumber(10) " " partNo(variable) boxSeq(4) "/" totalBoxes(4)
-//   qty(7) supplier(4) sPlant(1) sDock(2) " " arrivalDate(10) arrivalTime(5)
-//   laneNo(2) kbn(4) conveyance(1) address(rest)
-//
-// This assumes Part No. itself never contains a "/" (true of every real
-// sample seen so far — alphanumeric only) and that the "/" found is the
-// FIRST one in the string, which is always the Box Seq separator since
-// Arrival Date's own "/" characters come much later positionally.
+// Total fixed length: 83 characters exactly, confirmed against all three
+// order-type samples (Normal, Emergency, Sequential all measured 83 chars).
 
-const FIELD_WIDTHS = {
-  plant: 1,
-  dock: 2,
-  orderNumber: 10,
-  // — space —
-  // partNo: variable width, see decodeLocalFreeZoneQr
-  boxSeq: 4,
-  // — "/" —
-  totalBoxes: 4,
-  qty: 7,
-  supplier: 4,
-  sPlant: 1,
-  sDock: 2,
-  // — space —
-  arrivalDate: 10,
-  arrivalTime: 5,
-  laneNo: 2,
-  kbn: 4,
-  conveyance: 1,
-  // address takes whatever's left
+const FIELD_RANGES = {
+  plant: [0, 1],
+  dock: [1, 3],
+  orderNumber: [3, 15],
+  partNo: [15, 27],
+  boxSeqTotal: [27, 36], // "0001/0002" — split further below
+  qty: [36, 43],
+  supplier: [43, 47],
+  sPlant: [47, 48],
+  sDock: [48, 50],
+  // [50, 51] — blank separator, not captured as a field
+  arrivalDateTime: [51, 66], // "DD/MM/YYYY" + "HH:MM", 15 chars, no internal separator
+  laneNo: [66, 68], // literally "0-" when not applicable — never assume 2 digits
+  kbn: [68, 72],
+  conveyance: [72, 73],
+  address: [73, 83],
 };
 
-// Sanity bound on Part No.'s length — NOT meant to catch a subtle one-
-// character-off scan (that's genuinely indistinguishable from a real Part
-// No. one character longer/shorter, now that width varies), only to reject
-// obviously-wrong input where the "/" search latched onto something that
-// isn't really this field at all (e.g. garbage text, or a "/" appearing
-// absurdly early/late).
-const MIN_PART_NO_LENGTH = 4;
-const MAX_PART_NO_LENGTH = 20;
+const FIXED_LENGTH = 83;
 
 function decodeLocalFreeZoneQr(raw) {
   if (typeof raw !== 'string') return { ok: false, error: 'Not a string' };
-  const s = raw; // deliberately not trimmed — leading/trailing content would shift every fixed-width offset
-
-  let pos = 0;
-  const take = (n) => { const v = s.slice(pos, pos + n); pos += n; return v; };
-  const expect = (ch, label) => {
-    const got = s[pos];
-    if (got !== ch) throw new Error(`Expected "${ch}" (${label}) at position ${pos}, got "${got || ''}"`);
-    pos += 1;
-  };
+  if (raw.length < FIXED_LENGTH) {
+    return { ok: false, error: `Too short for the Kanban tag layout (${raw.length} chars, need ${FIXED_LENGTH})`, raw };
+  }
 
   try {
-    const plant = take(FIELD_WIDTHS.plant);
-    const dock = take(FIELD_WIDTHS.dock);
-    const orderNumber = take(FIELD_WIDTHS.orderNumber);
-    expect(' ', 'separator after order number');
+    const take = ([start, end]) => raw.slice(start, end);
 
-    // Anchor on the first "/" from here — Box Seq is always the 4 digits
-    // immediately before it, Part No. is everything before THAT (variable
-    // length, see the file-level comment).
-    const partNoStart = pos;
-    const slashIndex = s.indexOf('/', pos);
-    if (slashIndex === -1) throw new Error('No "/" found for the Box Seq / Total Boxes separator');
-    if (slashIndex - partNoStart < FIELD_WIDTHS.boxSeq) {
-      throw new Error('Not enough characters before "/" to hold Box Seq');
-    }
-    const partNo = s.slice(partNoStart, slashIndex - FIELD_WIDTHS.boxSeq).trim();
-    if (partNo.length < MIN_PART_NO_LENGTH || partNo.length > MAX_PART_NO_LENGTH) {
-      throw new Error(`Part No. length (${partNo.length}) outside expected range — likely not a real Kanban QR`);
-    }
-    const boxSeq = s.slice(slashIndex - FIELD_WIDTHS.boxSeq, slashIndex);
-    pos = slashIndex;
-    expect('/', 'separator inside box sequence');
+    const plant = take(FIELD_RANGES.plant);
+    const dock = take(FIELD_RANGES.dock);
+    const orderNumber = take(FIELD_RANGES.orderNumber).trim();
+    const partNo = take(FIELD_RANGES.partNo).trim();
 
-    const totalBoxes = take(FIELD_WIDTHS.totalBoxes);
-    const qtyRaw = take(FIELD_WIDTHS.qty);
-    const supplier = take(FIELD_WIDTHS.supplier);
-    const sPlant = take(FIELD_WIDTHS.sPlant);
-    const sDock = take(FIELD_WIDTHS.sDock);
-    expect(' ', 'separator after s.dock');
-    const arrivalDate = take(FIELD_WIDTHS.arrivalDate);
-    const arrivalTime = take(FIELD_WIDTHS.arrivalTime);
-    const laneNo = take(FIELD_WIDTHS.laneNo);
-    const kbn = take(FIELD_WIDTHS.kbn);
-    const conveyance = take(FIELD_WIDTHS.conveyance);
-    const address = s.slice(pos); // everything left, e.g. "SD - R03"
+    const boxSeqTotal = take(FIELD_RANGES.boxSeqTotal); // "0001/0002"
+    const slashIndex = boxSeqTotal.indexOf('/');
+    if (slashIndex === -1) throw new Error(`Expected "/" inside Box Seq/Total Boxes ("${boxSeqTotal}")`);
+    const boxSeq = parseInt(boxSeqTotal.slice(0, slashIndex), 10);
+    const totalBoxes = parseInt(boxSeqTotal.slice(slashIndex + 1), 10);
 
-    if (!address) throw new Error('Nothing left for address — string too short for this layout');
+    const qty = parseInt(take(FIELD_RANGES.qty), 10);
+    const supplier = take(FIELD_RANGES.supplier).trim();
+    const sPlant = take(FIELD_RANGES.sPlant).trim();
+    const sDock = take(FIELD_RANGES.sDock).trim();
 
-    const qty = parseInt(qtyRaw, 10);
-    const boxSeqNum = parseInt(boxSeq, 10);
-    const totalBoxesNum = parseInt(totalBoxes, 10);
+    const arrivalDateTime = take(FIELD_RANGES.arrivalDateTime); // "DD/MM/YYYY" + "HH:MM"
+    const arrivalDate = arrivalDateTime.slice(0, 10);
+    const arrivalTime = arrivalDateTime.slice(10);
+
+    const laneNo = take(FIELD_RANGES.laneNo); // NOT trimmed — "0-" is a real, meaningful value here
+    const kbn = take(FIELD_RANGES.kbn).trim();
+    const conveyance = take(FIELD_RANGES.conveyance).trim();
+    const address = take(FIELD_RANGES.address).trim();
+
+    if (!partNo) throw new Error('Part No. is blank');
 
     return {
       ok: true,
@@ -129,8 +94,8 @@ function decodeLocalFreeZoneQr(raw) {
       dock,
       orderNumber,
       partNo,
-      boxSeq: Number.isNaN(boxSeqNum) ? null : boxSeqNum,
-      totalBoxes: Number.isNaN(totalBoxesNum) ? null : totalBoxesNum,
+      boxSeq: Number.isNaN(boxSeq) ? null : boxSeq,
+      totalBoxes: Number.isNaN(totalBoxes) ? null : totalBoxes,
       qty: Number.isNaN(qty) ? null : qty,
       supplier,
       sPlant,
@@ -147,4 +112,31 @@ function decodeLocalFreeZoneQr(raw) {
   }
 }
 
-module.exports = { decodeLocalFreeZoneQr, FIELD_WIDTHS };
+// Import Part and Special Order tags are a completely different, much
+// shorter format — just a bare Part No., nothing else encoded (no order,
+// no box/qty, no date). Confirmed by the business owner:
+//   Import Part:    exactly 12 digits, e.g. "166043501000"
+//   Special Order:  12 digits + 1 trailing letter that carries no meaning
+//                    and is simply discarded, e.g. "53293KK17000P" is NOT
+//                    12 digits + letter — this example is 12 CHARACTERS
+//                    (digits and letters mixed) + a trailing "P" to drop,
+//                    so the rule is "12 characters, then optionally one
+//                    more character to ignore" rather than "12 DIGITS".
+// Since neither carries a quantity, handleSubmitFreeZoneQr looks the Qty/
+// Pack up from that batch's Part Procurement data (QTY_CONT / PACK_QTY_CONT)
+// by Part No. instead — see the design discussion for why that lookup
+// lives server-side rather than on the device.
+function decodeBarePartNo(raw) {
+  if (typeof raw !== 'string') return { ok: false, error: 'Not a string' };
+  const trimmed = raw.trim();
+
+  if (trimmed.length === 12) {
+    return { ok: true, raw, partNo: trimmed, orderType: 'import' };
+  }
+  if (trimmed.length === 13) {
+    return { ok: true, raw, partNo: trimmed.slice(0, 12), orderType: 'special' };
+  }
+  return { ok: false, error: `Not a recognized bare Part No. length (${trimmed.length} chars, need 12 or 13)`, raw };
+}
+
+module.exports = { decodeLocalFreeZoneQr, decodeBarePartNo, FIELD_RANGES, FIXED_LENGTH };

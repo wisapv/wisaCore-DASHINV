@@ -384,6 +384,19 @@ async function initDB() {
     await db.exec(`ALTER TABLE handheld_stock_counts ADD COLUMN order_no TEXT`);
   }
 
+  // qty on this table was always Box × Quantity/Pack + Pcs (computed on
+  // the device, see InputStockScreen.kt's computedQty) — a running TOTAL,
+  // never the tag's own printed Quantity/Pack by itself. The Detail page's
+  // QTY column showed that total directly, which looked identical to (and
+  // was easy to confuse with) the real per-box quantity — see the Free
+  // Zone QTY/TOTAL PCS design discussion, this is the same confusion on
+  // the Fix Zone side. qty_per_box carries the tag's own value separately
+  // so the two are never conflated again; qty itself is untouched and
+  // still IS the right number for SUM STOCK (a genuine grand total).
+  if (!stockCountsColumns.some((col) => col.name === 'qty_per_box')) {
+    await db.exec(`ALTER TABLE handheld_stock_counts ADD COLUMN qty_per_box INTEGER`);
+  }
+
   // ltbo_master_rows's very first version used a composite primary key
   // (batch_id, group_id, part_no, dock_code, supplier) — too narrow, it
   // silently merged rows that only matched on those 4 fields but actually

@@ -714,6 +714,34 @@ async function handleGetFreeZoneDetail(req, res) {
   }
 }
 
+// GET /api/handheld-assign/free-zone-raws?batchId=X — the raw QR text of
+// every row currently saved in handheld_free_zone_scans for this batch, one
+// entry per row (so a tag scanned N times comes back N times — the count
+// matters, not just presence, since the device reconciles by matching
+// counts per raw text, not just "does this raw text exist at all").
+//
+// Exists purely so a handheld device can reconcile its own local
+// sentThisSession (see FreeZoneQueue.kt on the device) against what the
+// server still actually has for this batch. In normal use this never
+// drifts — a confirmed row is never deleted — but backend/scripts/
+// clear-handheld-test-data.js (a dev/testing tool) deletes confirmed rows
+// directly, which a device that already marked them "sent" has no way to
+// find out about on its own. FreeZoneScreen calls this once when it opens
+// and drops any locally-sent entry the server no longer has.
+async function handleGetFreeZoneRaws(req, res) {
+  try {
+    const { batchId } = req.query;
+    if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+
+    const db = await connectDB();
+    const rows = await db.all('SELECT raw_qr FROM handheld_free_zone_scans WHERE batch_id = ?', batchId);
+    res.json({ raws: rows.map((r) => r.raw_qr) });
+  } catch (error) {
+    console.error('Get free zone raws error:', error);
+    res.status(500).json({ error: 'Failed to load free zone raws' });
+  }
+}
+
 // The whole zone flat — every part across every address, no per-address
 // grouping (replaces the old Select Address → Address Detail two-step).
 // Each row carries `counted` + whatever was previously submitted for it,
@@ -1160,6 +1188,7 @@ router.get('/overview', handleGetOverview);
 router.get('/detail', handleGetDetail);
 router.post('/submit-free-zone-qr', express.json({ limit: '5mb' }), handleSubmitFreeZoneQr);
 router.get('/free-zone-detail', handleGetFreeZoneDetail);
+router.get('/free-zone-raws', handleGetFreeZoneRaws);
 router.post('/submit-counts-bulk', express.json({ limit: '5mb' }), handleSubmitCountsBulk);
 router.post('/heartbeat', express.json({ limit: '1mb' }), handleHeartbeat);
 router.get('/heartbeats', handleGetHeartbeats);
@@ -1181,6 +1210,7 @@ module.exports.handleSetFreeZoneProgress = handleSetFreeZoneProgress;
 module.exports.handleGetOverview = handleGetOverview;
 module.exports.handleGetDetail = handleGetDetail;
 module.exports.handleGetFreeZoneDetail = handleGetFreeZoneDetail;
+module.exports.handleGetFreeZoneRaws = handleGetFreeZoneRaws;
 module.exports.handleLogCheckIn = handleLogCheckIn;
 module.exports.handleSubmitCountsBulk = handleSubmitCountsBulk;
 module.exports.handleHeartbeat = handleHeartbeat;
